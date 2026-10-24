@@ -136,6 +136,7 @@ ordersRouter.get('/orders/:id/status',async(req,res)=>{
   const result=await pool.query('SELECT id FROM orders WHERE id=$1 AND tracking_hash=$2',[orderId,sha256(token)]);
   if (!result.rowCount) throw new HttpError(404,'Pedido no encontrado');
   const sub=await pool.query('SELECT area,status,payment_status AS "paymentStatus" FROM suborders WHERE order_id=$1',[orderId]);
+  const game=await pool.query(`SELECT mode,player_count AS "playerCount",status,expires_at AS "expiresAt" FROM game_entitlements WHERE order_id=$1`,[orderId]);
   res.setHeader('Cache-Control','no-store');
-  res.json({orderId,suborders:sub.rows});
+  res.json({orderId,suborders:sub.rows,gameEntitlement:game.rows[0]??null});
 });

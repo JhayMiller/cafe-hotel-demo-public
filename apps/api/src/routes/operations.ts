@@ -10,13 +10,15 @@ operationsRouter.get('/staff/kanban/:area',needStaff('admin','reception','kitche
   const rows=await pool.query(`SELECT s.id,s.order_id AS "orderId",s.area,s.status,s.payment_status AS "paymentStatus",
     s.total_cop AS "totalCop",s.created_at AS "createdAt",o.table_code AS "tableCode",
     CASE WHEN s.area='hotel' THEN r.room_number ELSE NULL END AS "roomNumber",
+    ge.status AS "gameStatus",ge.mode AS "gameMode",ge.player_count AS "gamePlayerCount",ge.table_visit_id AS "tableVisitId",
     COALESCE(jsonb_agg(jsonb_build_object('name',i.product_name,'quantity',i.quantity,
       'options',i.options_snapshot,'note',i.note)) FILTER (WHERE i.id IS NOT NULL),'[]'::jsonb) items
     FROM suborders s JOIN orders o ON o.id=s.order_id
     LEFT JOIN stays st ON st.id=o.stay_id LEFT JOIN rooms r ON r.id=st.room_id
+    LEFT JOIN game_entitlements ge ON ge.order_id=o.id
     LEFT JOIN order_items i ON i.suborder_id=s.id
     WHERE s.area=$1 AND s.status NOT IN ('completed','cancelled')
-    GROUP BY s.id,o.id,r.room_number ORDER BY s.created_at`,[area]);
+    GROUP BY s.id,o.id,r.room_number,ge.id ORDER BY s.created_at`,[area]);
   res.json(rows.rows);
 });
 const transitionInput=z.object({status:z.enum(['queued','preparing','ready','dispatched','completed','cancelled'])});

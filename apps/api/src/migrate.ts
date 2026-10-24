@@ -3,7 +3,7 @@ import {fileURLToPath} from 'node:url';
 import argon2 from 'argon2';
 import {pool,type DB} from './lib/db.js';
 
-const migrations=['001_init.sql','002_pilot_seed.sql','003_brand_and_staff.sql','004_guest_services.sql','005_game_rewards.sql'];
+const migrations=['001_init.sql','002_pilot_seed.sql','003_brand_and_staff.sql','004_guest_services.sql','005_game_rewards.sql','006_game_fraud_controls.sql'];
 
 async function ensureInitialAdmin(client: DB) {
   const email=process.env.INITIAL_ADMIN_EMAIL?.trim().toLowerCase();
