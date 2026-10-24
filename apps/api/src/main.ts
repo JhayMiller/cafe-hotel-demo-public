@@ -16,6 +16,7 @@ import {ordersRouter} from './routes/orders.js';
 import {operationsRouter} from './routes/operations.js';
 import {webhooksRouter} from './routes/webhooks.js';
 import {settingsRouter,readBrand} from './routes/settings.js';
+import {gameRouter} from './routes/game.js';
 import {runMigrations} from './migrate.js';
 
 for (const env of ['DATABASE_URL','JWT_SECRET','PIN_PEPPER']) {
@@ -40,7 +41,7 @@ app.use((req,res,next)=>{
 app.get('/api/health',(_req,res)=>res.json({ok:true}));
 app.use('/api',webhooksRouter);
 app.use('/api',session);
-app.use('/api',accessRouter,catalogRouter,ordersRouter,operationsRouter,settingsRouter);
+app.use('/api',accessRouter,catalogRouter,ordersRouter,operationsRouter,settingsRouter,gameRouter);
 app.get('/manifest.webmanifest',async(_req,res)=>{
   const brand=await readBrand();
   res.type('application/manifest+json').json({name:brand.name,short_name:brand.shortName,
