@@ -3,9 +3,9 @@ import {api,type Product,cop} from '../api';
 
 type OptionForm={name:string,type:'add'|'remove'|'preference',priceDeltaCop:number};
 type GroupForm={mode:'new'|'existing',existingGroupId:string,name:string,minSelected:number,maxSelected:number,options:OptionForm[]};
-type ProductFormState={name:string,description:string,category:string,area:'cafe'|'hotel',visibility:'standard'|'guest',priceCop:number,imageUrl:string,isAvailable:boolean,gameGroup:'beverage'|'food'|'none',gameUnits:number,groups:GroupForm[]};
+type ProductFormState={name:string,description:string,category:string,area:'cafe'|'hotel',visibility:'standard'|'guest',priceCop:number,imageUrl:string,isAvailable:boolean,gameGroup:'beverage'|'pastry'|'meal'|'packaged'|'other'|'none',gameUnits:number,groups:GroupForm[]};
 const emptyGroup=():GroupForm=>({mode:'new',existingGroupId:'',name:'',minSelected:0,maxSelected:1,options:[{name:'',type:'add',priceDeltaCop:0}]});
-const emptyForm=():ProductFormState=>({name:'',description:'',category:'Alimentos',area:'cafe',visibility:'standard',priceCop:0,imageUrl:'',isAvailable:true,gameGroup:'food',gameUnits:1,groups:[]});
+const emptyForm=():ProductFormState=>({name:'',description:'',category:'Alimentos',area:'cafe',visibility:'standard',priceCop:0,imageUrl:'',isAvailable:true,gameGroup:'meal',gameUnits:1,groups:[]});
 type ExistingGroup={id:string,name:string,options:OptionForm[]};
 export default function ProductForm({onSaved,editing}:{onSaved:()=>void,editing?:Product|null}) {
   const [form,setForm]=useState<ProductFormState>(emptyForm);
@@ -55,7 +55,7 @@ export default function ProductForm({onSaved,editing}:{onSaved:()=>void,editing?
     <label>Visibilidad<select value={form.visibility} disabled={form.area==='hotel'} onChange={e=>set('visibility',e.target.value as 'standard'|'guest')}>
       <option value="standard">Todo público</option><option value="guest">Solo huéspedes</option></select></label></div>
     {form.area==='cafe'&&<div className="columns"><label>Cómo cuenta para el juego<select value={form.gameGroup} onChange={e=>set('gameGroup',e.target.value as ProductFormState['gameGroup'])}>
-      <option value="beverage">Bebida</option><option value="food">Comida</option><option value="none">No habilita jugadores</option></select></label>
+      <option value="beverage">Bebida</option><option value="pastry">Pastelería o postre</option><option value="meal">Plato o comida</option><option value="packaged">Producto de paquete</option><option value="other">Otro consumo individual</option><option value="none">No habilita jugadores</option></select></label>
       <label>Personas por unidad<input type="number" min="0" max="20" value={form.gameUnits} disabled={form.gameGroup==='none'} onChange={e=>set('gameUnits',Number(e.target.value))}/><small>Normalmente 1. Usa más solo para productos realmente compartidos.</small></label></div>}
     <label className="check"><input type="checkbox" checked={form.isAvailable} onChange={e=>set('isAvailable',e.target.checked)}/> Disponible para pedidos</label>
     <label>Imagen del producto <input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>{

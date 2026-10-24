@@ -9,5 +9,5 @@ export async function api<T>(path:string,opts?:RequestInit):Promise<T> {
 }
 export type ModifierOption={id:string,name:string,type:'add'|'remove'|'preference',priceDeltaCop:number|string};
 export type ModifierGroup={id:string,name:string,minSelected:number,maxSelected:number,options:ModifierOption[]};
-export type Product={id:string,name:string,description:string,category:string,area:'cafe'|'hotel',visibility:'standard'|'guest',priceCop:number|string,imageUrl:string|null,isAvailable:boolean,deletedAt?:string|null,gameGroup:'beverage'|'food'|'none',gameUnits:number,groups:ModifierGroup[]};
+export type Product={id:string,name:string,description:string,category:string,area:'cafe'|'hotel',visibility:'standard'|'guest',priceCop:number|string,imageUrl:string|null,isAvailable:boolean,deletedAt?:string|null,gameGroup:'beverage'|'pastry'|'meal'|'packaged'|'other'|'none',gameUnits:number,groups:ModifierGroup[]};
 export const cop=(n:number|string)=>new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(Number(n));

@@ -4,7 +4,9 @@
 
 Una visita de mesa puede recibir una sola partida. Dividir la cuenta, crear varios pedidos, usar varios teléfonos o cambiar entre los modos Individual y Amigos no crea nuevas partidas. La partida queda disponible automáticamente cuando el pedido de café está pagado; el personal no tiene que autorizarla.
 
-El servidor calcula el cupo con los productos pagados: `máximo de jugadores = mayor entre unidades de bebidas y unidades de comida`, con un tope técnico de 20. No se suman ambos grupos porque una persona puede consumir bebida y comida. Cada producto guarda un grupo de juego (`bebida`, `comida` o `no cuenta`) y cuántas personas representa cada unidad; estos valores se copian al pedido para que una edición posterior de la carta no cambie su cupo. Ejemplo: cuatro bebidas y ocho comidas permiten elegir de uno a ocho jugadores.
+El servidor evalúa si la cantidad declarada de jugadores es compatible con las porciones individuales del pedido pagado, con un tope técnico de 20. Cada producto guarda un tipo de consumo (`bebida`, `pastelería`, `plato`, `producto de paquete`, `otro` o `no cuenta`) y cuántas personas representa cada unidad. Estos valores se copian al pedido para que una edición posterior de la carta no cambie la evidencia.
+
+La regla esencial es que cada jugador declarado debe quedar respaldado por al menos una porción. La coincidencia es exacta cuando jugadores y porciones son iguales. Se considera alta cuando todas las personas quedan cubiertas y la combinación de categorías permite una distribución natural; por ejemplo, tres bebidas, cuatro productos de pastelería y un producto de paquete respaldan cinco jugadores. Si se declaran cinco jugadores con solo dos bebidas y dos productos de pastelería, se rechaza porque una persona quedaría sin consumo.
 
 En mostrador, donde no existe una mesa, solo se permite el modo Individual. Conserva el límite de 24 horas por cliente o dispositivo.
 
@@ -13,7 +15,8 @@ En mostrador, donde no existe una mesa, solo se permite el modo Individual. Cons
 | Intento de abuso | Control aplicado |
 | --- | --- |
 | Un pedido pequeño intenta abrir ocho turnos | El teléfono propone la cantidad, pero el servidor la compara con el cupo calculado del pedido y rechaza cualquier exceso. |
-| Cuatro bebidas y ocho comidas eligen ocho jugadores | Se permite: el mayor grupo de consumo es ocho. No se conceden doce turnos porque bebidas y comidas no se suman. |
+| Tres bebidas, cuatro productos de pastelería y un paquete; eligen cinco jugadores | Se permite: las ocho porciones pueden distribuirse entre cinco personas sin dejar a nadie sin consumo. |
+| Dos bebidas y dos productos de pastelería; eligen cinco jugadores | Se rechaza: el pedido solo respalda cuatro personas y la interfaz pide corregir la cantidad. |
 | Una mesa de cuatro divide la cuenta en cuatro pedidos | Los pedidos de una misma mesa se asocian a una visita activa; la visita admite una sola autorización. |
 | La mesa juega Individual y luego Amigos | El primer modo emitido consume la única autorización de la visita. |
 | Copian el enlace o lo abren en otro teléfono | El pedido solo crea una sesión y la sesión queda ligada al primer dispositivo mediante un hash. |

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
+    "test:game-capacity": "tsx scripts/test-game-capacity.ts",
     "start": "node dist/main.js",
     "seed:admin": "tsx scripts/create-admin.ts"
   },

@@ -5,6 +5,7 @@ import {cartInput} from '../lib/validators.js';
 import {pool,inTransaction,HttpError} from '../lib/db.js';
 import {sha256,checkoutDetails} from '../lib/wompi.js';
 import {announce} from '../lib/events.js';
+import {assessParty,consumptionFromRows} from '../lib/game-capacity.js';
 export const ordersRouter=Router();
 
 const safeNumber=(value:any):number=>{
@@ -40,7 +41,7 @@ ordersRouter.post('/orders/checkout',async(req,res)=>{
       LEFT JOIN modifier_options o ON o.group_id=g.id AND o.is_active=true
       WHERE pm.product_id=ANY($1::uuid[])`,[ids]);
     const prepared: Array<{area:'cafe'|'hotel',name:string,productId:string,quantity:number,unit:number,options:any[],note:string,line:number,
-      gameGroup:'beverage'|'food'|'none',gameUnits:number}> = [];
+      gameGroup:'beverage'|'pastry'|'meal'|'packaged'|'other'|'none',gameUnits:number}> = [];
     let totalCafe=0,totalHotel=0;
     for (const item of cart.items) {
       const p=byId.get(item.productId);
@@ -139,13 +140,13 @@ ordersRouter.get('/orders/:id/status',async(req,res)=>{
   if (!result.rowCount) throw new HttpError(404,'Pedido no encontrado');
   const sub=await pool.query('SELECT area,status,payment_status AS "paymentStatus" FROM suborders WHERE order_id=$1',[orderId]);
   const game=await pool.query(`SELECT mode,player_count AS "playerCount",status,expires_at AS "expiresAt" FROM game_entitlements WHERE order_id=$1`,[orderId]);
-  const capacity=await pool.query(`SELECT
-    COALESCE(SUM(CASE WHEN i.game_group_snapshot='beverage' THEN i.quantity*i.game_units_snapshot ELSE 0 END),0)::int AS "beverageUnits",
-    COALESCE(SUM(CASE WHEN i.game_group_snapshot='food' THEN i.quantity*i.game_units_snapshot ELSE 0 END),0)::int AS "foodUnits"
+  const capacity=await pool.query(`SELECT i.game_group_snapshot,
+    SUM(i.quantity*i.game_units_snapshot)::int AS units
     FROM suborders s JOIN order_items i ON i.suborder_id=s.id
-    WHERE s.order_id=$1 AND s.area='cafe' AND s.payment_status='paid'`,[orderId]);
-  const counts=capacity.rows[0],maxPlayers=Math.min(20,Math.max(counts.beverageUnits,counts.foodUnits));
+    WHERE s.order_id=$1 AND s.area='cafe' AND s.payment_status='paid' AND i.game_group_snapshot<>'none'
+    GROUP BY i.game_group_snapshot`,[orderId]);
+  const counts=consumptionFromRows(capacity.rows),assessment=assessParty(counts,1);
   res.setHeader('Cache-Control','no-store');
   res.json({orderId,suborders:sub.rows,gameEntitlement:game.rows[0]??null,
-    gameEligibility:maxPlayers>0?{...counts,maxPlayers}:null});
+    gameEligibility:assessment.supportedPlayers>0?{counts,totalUnits:assessment.totalUnits,maxPlayers:assessment.supportedPlayers}:null});
 });
