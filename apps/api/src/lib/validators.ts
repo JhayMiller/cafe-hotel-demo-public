@@ -9,6 +9,7 @@ export const productInput = z.object({
   name:z.string().min(2).max(130),description:z.string().max(500).default(''),
   category:z.string().min(2).max(60),area:z.enum(['cafe','hotel']),
   visibility:z.enum(['standard','guest']),priceCop:z.number().int().min(0).max(100000000),
+  gameGroup:z.enum(['beverage','food','none']).default('food'),gameUnits:z.number().int().min(0).max(20).default(1),
   imageUrl:z.url().max(2000).nullable().optional(),isAvailable:z.boolean().default(true),
   groups:z.array(z.union([
     z.object({existingGroupId:z.uuid()}),

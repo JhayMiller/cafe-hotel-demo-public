@@ -10,6 +10,7 @@ export const catalogRouter=Router();
 
 const SELECT_PRODUCTS=`SELECT p.id,p.name,p.description,p.category,p.area,p.visibility,p.price_cop AS "priceCop",
  p.image_url AS "imageUrl",p.is_available AS "isAvailable",p.deleted_at AS "deletedAt",
+ p.game_group AS "gameGroup",p.game_units AS "gameUnits",
  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',g.id,'name',g.name,'minSelected',g.min_selected,
  'maxSelected',g.max_selected,'options',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',o.id,
  'name',o.name,'type',o.type,'priceDeltaCop',o.price_delta_cop) ORDER BY o.sort_order)
@@ -67,15 +68,15 @@ async function saveProduct(req:any,res:any,update=false) {
     let result;
     if (id) {
       result=await c.query(`UPDATE products SET name=$2,description=$3,category=$4,area=$5,visibility=$6,
-        price_cop=$7,image_url=$8,is_available=$9,updated_at=now()
+        price_cop=$7,image_url=$8,is_available=$9,game_group=$10,game_units=$11,updated_at=now()
         WHERE id=$1 AND deleted_at IS NULL RETURNING id`,
-        [id,input.name,input.description,input.category,input.area,input.visibility,input.priceCop,input.imageUrl??null,input.isAvailable]);
+        [id,input.name,input.description,input.category,input.area,input.visibility,input.priceCop,input.imageUrl??null,input.isAvailable,input.area==='cafe'?input.gameGroup:'none',input.area==='cafe'?input.gameUnits:0]);
       if (!result.rowCount) throw new HttpError(404,'Producto inexistente');
       await c.query('DELETE FROM product_modifier_groups WHERE product_id=$1',[id]);
     } else {
-      result=await c.query(`INSERT INTO products(name,description,category,area,visibility,price_cop,image_url,is_available)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-        [input.name,input.description,input.category,input.area,input.visibility,input.priceCop,input.imageUrl??null,input.isAvailable]);
+      result=await c.query(`INSERT INTO products(name,description,category,area,visibility,price_cop,image_url,is_available,game_group,game_units)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+        [input.name,input.description,input.category,input.area,input.visibility,input.priceCop,input.imageUrl??null,input.isAvailable,input.area==='cafe'?input.gameGroup:'none',input.area==='cafe'?input.gameUnits:0]);
     }
     const pid=result.rows[0].id as string;
     await attachGroups(c,pid,input.groups);
