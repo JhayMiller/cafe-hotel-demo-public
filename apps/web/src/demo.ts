@@ -10,6 +10,7 @@ const products: Product[] = [
 
 export function demoResponse(path:string):unknown {
   if(path==='/auth/session')return {role:'standard'};
+  if(path==='/brand')return {name:'Posada del Puerto | café hotel',shortName:'Posada del Puerto',tagline:'Café, descanso y hospitalidad junto al puerto.',description:'Sabores honestos, madera cálida y una estadía atendida con cercanía.',logoUrl:null,heroImageUrl:null,primaryColor:'#9B1C1F',secondaryColor:'#604536',accentColor:'#D09A52',surfaceColor:'#F4EDE3',guestTitle:'Tu habitación, más cerca de todo',guestDescription:'Pide a la habitación, solicita amenidades y sigue cada servicio desde aquí.',address:'',phone:''};
   if(path==='/catalog')return products;
   throw new Error('Demostración local: pedidos, pagos y accesos reales desactivados.');
 }

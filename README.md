@@ -1,8 +1,8 @@
-# Café + Hotel — PWA de pedidos unificados
+# Posada del Puerto — Café + Hotel
 
-Proyecto base de referencia para Codex. Incluye frontend React PWA, API Express/TypeScript, PostgreSQL, RBAC de staff, PIN de huésped con caducidad, CMS de productos/modificadores, split routing, Web Checkout Wompi, webhook autenticado, Kanban realtime y outbox WhatsApp.
+Servicio de marca blanca para operación integrada de café y hotel. Incluye frontend React PWA, API Express/TypeScript, PostgreSQL, perfiles de personal, PIN de huésped con caducidad, edición de carta, personalización de marca, Web Checkout Wompi, webhook autenticado, tablero en vivo y outbox WhatsApp.
 
-**Estado:** código inicial para desarrollo y validación, no un sistema desplegado ni una plataforma certificada para procesar dinero real. **No hay una cuenta Wompi, Meta, PostgreSQL ni S3 configurada**, ni se incluyen secretos de producción.
+**Estado:** piloto desplegable para demostración y validación. Los pagos reales permanecen desactivados hasta configurar una cuenta del comercio, aceptar sus tarifas y completar pruebas de sandbox. No se incluyen secretos en el repositorio.
 
 ## Requisitos
 
@@ -33,6 +33,8 @@ Proyecto base de referencia para Codex. Incluye frontend React PWA, API Express/
    cd apps/api
    npm run seed:admin -- admin@ejemplo.com 'CONTRASENA_LARGA_Y_ALEATORIA'
    ```
+
+   En un despliegue sin consola puede definirse una sola vez `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_PASSWORD` (mínimo 12 caracteres) e `INITIAL_ADMIN_NAME`. Al reiniciar, la cuenta se crea solo si todavía no existe otro administrador. Después se debe retirar `INITIAL_ADMIN_PASSWORD` de las variables del servidor.
 
 5. En otra terminal:
 
@@ -73,6 +75,9 @@ Configurar `STORAGE_BUCKET`, `STORAGE_REGION`, `STORAGE_ENDPOINT` (opcional), `S
 | Wompi Web Checkout y webhook | Adaptador incluido; requiere configuración y ensayo sandbox |
 | Paneles staff y actualización Socket.IO | Base operativa incluida |
 | CMS CRUD / disponibilidad / modificadores | Incluido |
+| Marca blanca | Nombre, logo, imagen principal y paleta editables desde el panel |
+| Cuentas del personal | Alta, roles, activación y cambio de contraseña desde el panel |
+| Portal de huéspedes | Acceso por habitación y PIN, amenidades, carta y seguimiento |
 | Imágenes | Endpoint de presign incluido, requiere bucket |
 | CRM visitas y ticket promedio | Consulta incluida; solo pedidos finalizados |
 | Avisos WhatsApp | Outbox y worker incluidos; requieren token + plantillas y consentimiento |

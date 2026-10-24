@@ -1,239 +1,60 @@
-import {useCallback,useEffect,useState,type FormEvent} from 'react';
+import {useCallback,useEffect,useMemo,useState,type CSSProperties,type FormEvent} from 'react';
 import {io} from 'socket.io-client';
-import {api,cop,type Product,type ModifierGroup} from './api';
+import {api,cop,type Product} from './api';
 import ProductForm from './components/ProductForm';
 
-type Role='standard'|'guest'|'admin'|'kitchen'|'cashier'|'reception'|'housekeeping';
+type Role='standard'|'guest'|'admin'|'reception'|'kitchen'|'cashier'|'housekeeping';
 type CartItem={productId:string,quantity:number,optionIds:string[],note:string};
+type CheckoutResult={orderId:string,trackingToken:string,suborders:{area:string,status:string}[],onlineCheckout?:{url:string,publicKey:string,currency:string,amountInCents:number,reference:string,signature:string}|null};
 type KanbanItem={name:string,quantity:number,options:{name:string}[],note:string};
 type KanbanOrder={id:string,orderId:string,area:'cafe'|'hotel',status:string,paymentStatus:string,totalCop:string,tableCode:string|null,roomNumber:string|null,items:KanbanItem[]};
-type CheckoutResult={orderId:string,trackingToken:string,suborders:{area:string,status:string,totalCop:string}[],onlineCheckout:null|{url:string,publicKey:string,currency:string,amountInCents:number,reference:string,signature:string}};
+export type Brand={name:string,shortName:string,tagline:string,description:string,logoUrl:string|null,heroImageUrl:string|null,primaryColor:string,secondaryColor:string,accentColor:string,surfaceColor:string,guestTitle:string,guestDescription:string,address:string,phone:string};
+const defaultBrand:Brand={name:'Posada del Puerto | café hotel',shortName:'Posada del Puerto',tagline:'Café, descanso y hospitalidad junto al puerto.',description:'Sabores honestos, madera cálida y una estadía atendida con cercanía.',logoUrl:null,heroImageUrl:null,primaryColor:'#9B1C1F',secondaryColor:'#604536',accentColor:'#D09A52',surfaceColor:'#F4EDE3',guestTitle:'Tu habitación, más cerca de todo',guestDescription:'Pide a la habitación, solicita amenidades y sigue cada servicio desde aquí.',address:'',phone:''};
+const readCart=()=>{try{return JSON.parse(localStorage.getItem('cafe-hotel-cart')||'[]') as CartItem[];}catch{return[];}};
 
-const readCart=():CartItem[]=>{try{return JSON.parse(localStorage.getItem('cafe-hotel-cart')||'[]');}catch{return [];}};
-function ProductSelector({product,add,cancel}:{product:Product,add:(item:CartItem)=>void,cancel:()=>void}) {
-  const [selected,setSelected]=useState<string[]>([]);
-  const [note,setNote]=useState('');
-  const groups=product.groups;
-  const valid=groups.every(g=>{
-    const n=g.options.filter(o=>selected.includes(o.id)).length;
-    return n>=g.minSelected&&n<=g.maxSelected;
-  });
-  const toggle=(group:ModifierGroup,id:string)=>{
-    const groupIds=new Set(group.options.map(o=>o.id));
-    setSelected(ids=>{
-      if (ids.includes(id)) return ids.filter(v=>v!==id);
-      const previous=ids.filter(v=>groupIds.has(v));
-      const retain=previous.length>=group.maxSelected?previous.slice(1):previous;
-      return [...ids.filter(v=>!groupIds.has(v)),...retain,id];
-    });
-  };
+function BrandMark({brand,compact=false}:{brand:Brand,compact?:boolean}){return <span className={`brand-mark ${compact?'compact':''}`}>{brand.logoUrl?<img src={brand.logoUrl} alt={`Logo ${brand.shortName}`}/>:<span className="brand-monogram">PP</span>}<span><strong>{brand.shortName}</strong>{!compact&&<small>café · hotel</small>}</span></span>;}
+function Header({brand,role}:{brand:Brand,role:Role}){return <header className="topbar"><a className="wordmark" href="/"><BrandMark brand={brand}/></a><nav aria-label="Navegación principal"><a href="/">Inicio</a><a href="/#carta">Carta</a><a href="/huespedes">Huéspedes</a><a className="staff-link" href="/personal">{!['standard','guest'].includes(role)?'Panel':'Personal'}</a></nav></header>;}
+function HomeHero({brand}:{brand:Brand}){const style=brand.heroImageUrl?{'--hero-image':`linear-gradient(90deg,rgba(43,24,18,.9),rgba(43,24,18,.25)),url("${brand.heroImageUrl}")`} as CSSProperties:undefined;return <section className="hero" style={style}><div className="hero-content"><span className="kicker">POSADA · CAFÉ · EXPERIENCIAS</span><h1>Una pausa con sabor a puerto.</h1><p>{brand.tagline}</p><div className="hero-actions"><a className="button" href="#carta">Explorar la carta</a><a className="button ghost" href="/huespedes">Soy huésped</a></div></div><div className="hero-note"><span>Abierto para ti</span><strong>Café y servicio a la habitación</strong></div></section>;}
+function FeatureStrip(){return <section className="feature-strip" aria-label="Servicios"><article><span>01</span><div><strong>Café con identidad</strong><p>Preparaciones frescas y sabores locales.</p></div></article><article><span>02</span><div><strong>Sin filas</strong><p>Pide desde tu mesa o habitación.</p></div></article><article><span>03</span><div><strong>Seguimiento simple</strong><p>Conoce el estado de cada solicitud.</p></div></article></section>;}
+
+function ProductSelector({product,add,cancel}:{product:Product,add:(item:CartItem)=>void,cancel:()=>void}){
+  const [selected,setSelected]=useState<string[]>([]),[note,setNote]=useState('');const groups=product.groups;
+  const valid=groups.every(g=>{const n=g.options.filter(o=>selected.includes(o.id)).length;return n>=g.minSelected&&n<=g.maxSelected;});
+  const toggle=(group:Product['groups'][number],id:string)=>{const groupIds=new Set(group.options.map(o=>o.id));setSelected(ids=>{if(ids.includes(id))return ids.filter(v=>v!==id);const previous=ids.filter(v=>groupIds.has(v));const retain=previous.length>=group.maxSelected?previous.slice(1):previous;return [...ids.filter(v=>!groupIds.has(v)),...retain,id];});};
   const total=Number(product.priceCop)+groups.flatMap(g=>g.options).filter(o=>selected.includes(o.id)).reduce((sum,o)=>sum+Number(o.priceDeltaCop),0);
-  return <div className="overlay" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)cancel();}}>
-    <section className="dialog" role="dialog" aria-modal="true" aria-label={`Personalizar ${product.name}`}>
-      <div className="inline"><h2>{product.name}</h2><button className="text-button" onClick={cancel}>Cerrar</button></div>
-      {groups.map(group=><fieldset key={group.id} className="modifier-fieldset">
-        <legend>{group.name} <small>({group.minSelected===group.maxSelected?`Elige ${group.minSelected}`:`${group.minSelected}–${group.maxSelected}`})</small></legend>
-        {group.options.map(option=><label className="check" key={option.id}><input type="checkbox" checked={selected.includes(option.id)} onChange={()=>toggle(group,option.id)}/>
-          <span>{option.name} {Number(option.priceDeltaCop)>0?`(+${cop(option.priceDeltaCop)})`:''}</span></label>)}
-      </fieldset>)}
-      <label>Indicaciones de preparación<textarea value={note} maxLength={350} onChange={e=>setNote(e.target.value)} placeholder="Ej. sin hielo"/></label>
-      <button disabled={!valid} onClick={()=>add({productId:product.id,quantity:1,optionIds:selected,note})}>Agregar · {cop(total)}</button>
-    </section>
-  </div>;
+  return <div className="overlay" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)cancel();}}><section className="dialog" role="dialog" aria-modal="true" aria-label={`Personalizar ${product.name}`}><div className="inline"><div><span className="kicker">PERSONALIZA TU PEDIDO</span><h2>{product.name}</h2></div><button className="icon-button" onClick={cancel} aria-label="Cerrar">×</button></div>{groups.map(group=><fieldset key={group.id} className="modifier-fieldset"><legend>{group.name} <small>{group.minSelected===group.maxSelected?`Elige ${group.minSelected}`:`Elige ${group.minSelected}–${group.maxSelected}`}</small></legend>{group.options.map(option=><label className="check option-check" key={option.id}><input type="checkbox" checked={selected.includes(option.id)} onChange={()=>toggle(group,option.id)}/><span>{option.name}</span>{Number(option.priceDeltaCop)>0&&<b>+{cop(option.priceDeltaCop)}</b>}</label>)}</fieldset>)}<label>Indicaciones para preparación<textarea value={note} maxLength={350} onChange={e=>setNote(e.target.value)} placeholder="Ej. sin hielo, poca azúcar…"/></label><button disabled={!valid} onClick={()=>add({productId:product.id,quantity:1,optionIds:selected,note})}>Agregar al pedido · {cop(total)}</button></section></div>;
 }
-function Menu({role,products,cart,onCartChange}:{role:Role,products:Product[],cart:CartItem[],onCartChange:(v:CartItem[])=>void}) {
-  const [configuring,setConfiguring]=useState<Product|null>(null);
-  const [customer,setCustomer]=useState({name:'',phone:'+57',whatsappOptIn:false});
-  const [cafePayment,setCafePayment]=useState<'cash'|'online'>('cash');
-  const [hotelPayment,setHotelPayment]=useState<'none'|'room_charge'>('none');
-  const [room,setRoom]=useState('');const [pin,setPin]=useState('');
-  const [busy,setBusy]=useState(false);
-  const [notice,setNotice]=useState('');
-  const [lastOrder,setLastOrder]=useState<CheckoutResult|null>(null);
-  const [attemptKey,setAttemptKey]=useState(()=>crypto.randomUUID());
-  const update=(next:CartItem[])=>{onCartChange(next);setAttemptKey(crypto.randomUUID());};
-  const add=(item:CartItem)=>{update([...cart,item]);setConfiguring(null);};
-  const estimate=cart.reduce((sum,item)=>{
-    const p=products.find(x=>x.id===item.productId);
-    if(!p)return sum;
-    const delta=p.groups.flatMap(g=>g.options).filter(o=>item.optionIds.includes(o.id)).reduce((n,o)=>n+Number(o.priceDeltaCop),0);
-    return sum+(Number(p.priceCop)+delta)*item.quantity;
-  },0);
-  const containsCafe=cart.some(item=>products.find(p=>p.id===item.productId)?.area==='cafe');
-  const containsPaidHotel=cart.some(item=>{const p=products.find(p=>p.id===item.productId);if(p?.area!=='hotel')return false;
-    const extras=p.groups.flatMap(g=>g.options).filter(o=>item.optionIds.includes(o.id)).reduce((n,o)=>n+Number(o.priceDeltaCop),0);
-    return Number(p.priceCop)+extras>0;});
-  async function guestLogin(e:FormEvent){e.preventDefault();try{
-    await api('/guest/access',{method:'POST',body:JSON.stringify({roomNumber:room,pin})});
-    location.reload();
-  }catch(error){setNotice((error as Error).message);}}
-  async function checkout(e:FormEvent){e.preventDefault();setBusy(true);setNotice('');
-    try {
-      const result=await api<CheckoutResult>('/orders/checkout',{method:'POST',body:JSON.stringify({
-        idempotencyKey:attemptKey,items:cart,cafePayment,hotelPayment,
-        ...((role!=='guest'||customer.whatsappOptIn)?{customer}:{}),
-        tableCode:new URLSearchParams(location.search).get('mesa')??undefined
-      })});
-      setLastOrder(result);update([]);
-      setNotice('Pedido recibido. Conserva tu número de pedido.');
-    }catch(error){setNotice((error as Error).message);}finally{setBusy(false);}
-  }
-  function goPay(details:NonNullable<CheckoutResult['onlineCheckout']>) {
-    const url=new URL(details.url);
-    url.searchParams.set('public-key',details.publicKey);
-    url.searchParams.set('currency',details.currency);
-    url.searchParams.set('amount-in-cents',String(details.amountInCents));
-    url.searchParams.set('reference',details.reference);
-    url.searchParams.set('signature:integrity',details.signature);
-    location.assign(url.href);
-  }
-  return <div className="stack">
-    <section className="intro"><p className="eyebrow">PEDIDOS SIN ESPERAS</p><h1>Tu café, a tu ritmo.</h1><p>Explora el menú, personaliza tus favoritos y solicita lo que necesitas.</p>
-      {role==='guest'&&<span className="pill">Acceso de huésped activo</span>}
-    </section>
-    {role!=='guest'&&<form className="guest-box" onSubmit={guestLogin}>
-      <strong>¿Te hospedas aquí?</strong><p>Activa las solicitudes de habitación con tu PIN de recepción.</p>
-      <div className="columns"><label>N.º habitación<input required value={room} onChange={e=>setRoom(e.target.value)}/></label>
-        <label>PIN de 4 dígitos<input required inputMode="numeric" pattern="[0-9]{4}" maxLength={4} type="password" value={pin} onChange={e=>setPin(e.target.value)}/></label></div>
-      <button className="secondary">Acceso huéspedes</button>
-    </form>}
-    <section><div className="inline"><h2>Menú</h2><span className="subtle">{products.length} opciones</span></div>
-      <div className="product-grid">{products.map(p=><article className="product" key={p.id}>
-        {p.imageUrl?<img src={p.imageUrl} alt=""/>:<div className="image-fallback">{p.area==='hotel'?'Habitación':'Café'}</div>}
-        <div className="product-info"><span className="eyebrow">{p.category}</span><h3>{p.name}</h3><p>{p.description}</p>
-          <div className="inline"><strong>{Number(p.priceCop)===0?'Sin cargo':cop(p.priceCop)}</strong><button onClick={()=>setConfiguring(p)}>Agregar</button></div>
-        </div></article>)}</div>
-    </section>
-    <section className="cart-panel"><h2>Tu pedido · {cart.length} productos</h2>
-      {!cart.length?<p className="subtle">Agrega algo del menú para comenzar.</p>:<form onSubmit={checkout} className="stack">
-        {cart.map((item,i)=>{const p=products.find(x=>x.id===item.productId);return <div className="cart-line" key={i}>
-          <span><strong>{p?.name??'Producto'}</strong><small> · {item.quantity} ud.</small></span>
-          <button type="button" className="text-button" onClick={()=>update(cart.filter((_,j)=>j!==i))}>Quitar</button></div>;})}
-        {<div className="columns"><label>{role==='guest'?'Nombre para avisos (opcional)':'Nombre'}<input required={role!=='guest'||customer.whatsappOptIn} value={customer.name} onChange={e=>setCustomer({...customer,name:e.target.value})}/></label>
-          <label>Teléfono WhatsApp (+57...)<input required={role!=='guest'||customer.whatsappOptIn} type="tel" value={customer.phone} onChange={e=>setCustomer({...customer,phone:e.target.value})}/></label>
-          <label className="check"><input type="checkbox" checked={customer.whatsappOptIn} onChange={e=>setCustomer({...customer,whatsappOptIn:e.target.checked})}/> Acepto recibir notificaciones del pedido por WhatsApp</label>
-        </div>}
-        {containsCafe&&<label>Pago del café<select value={cafePayment} onChange={e=>setCafePayment(e.target.value as 'cash'|'online')}><option value="cash">Efectivo en caja</option><option value="online">PSE / tarjeta en línea</option></select></label>}
-        {containsPaidHotel&&<label>Servicios del hotel<select value={hotelPayment} onChange={e=>setHotelPayment(e.target.value as 'none'|'room_charge')}><option value="none">Selecciona un método</option><option value="room_charge">Cargar a la habitación</option></select></label>}
-        <div className="inline"><strong>Total estimado</strong><strong>{cop(estimate)}</strong></div>
-        <button disabled={busy}>{busy?'Confirmando…':'Confirmar pedido'}</button>
-      </form>}
-      {notice&&<p className="status" role="status">{notice}</p>}
-      {lastOrder&&<div className="receipt"><strong>Pedido {lastOrder.orderId.slice(0,8).toUpperCase()}</strong>
-        {lastOrder.suborders.map(s=><p key={s.area}>{s.area==='cafe'?'Café':'Hotel'}: {s.status==='pending_payment'?'Paga en caja para iniciar':s.status==='waiting_gateway'?'Esperando pago':'Recibido'}</p>)}
-        {lastOrder.onlineCheckout&&<button onClick={()=>goPay(lastOrder.onlineCheckout!)}>Pagar en Wompi</button>}
-        <a href={`/seguimiento?pedido=${lastOrder.orderId}&token=${lastOrder.trackingToken}`}>Seguir pedido</a>
-      </div>}
-    </section>
-    {configuring&&<ProductSelector product={configuring} add={add} cancel={()=>setConfiguring(null)}/>}
-  </div>;
+
+function Menu({role,products,cart,onCartChange,guestMode=false}:{role:Role,products:Product[],cart:CartItem[],onCartChange:(v:CartItem[])=>void,guestMode?:boolean}){
+  const [configuring,setConfiguring]=useState<Product|null>(null),[customer,setCustomer]=useState({name:'',phone:'+57',whatsappOptIn:false}),[cafePayment,setCafePayment]=useState<'cash'|'online'>('cash'),[hotelPayment,setHotelPayment]=useState<'none'|'room_charge'>('none'),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[lastOrder,setLastOrder]=useState<CheckoutResult|null>(null),[attemptKey,setAttemptKey]=useState(()=>crypto.randomUUID());
+  const update=(next:CartItem[])=>{onCartChange(next);setAttemptKey(crypto.randomUUID());};const visible=guestMode?products:products.filter(p=>p.area==='cafe');
+  const grouped=useMemo(()=>Object.entries(visible.reduce<Record<string,Product[]>>((a,p)=>{(a[p.category]??=[]).push(p);return a;},{})),[visible]);
+  const estimate=cart.reduce((sum,item)=>{const p=products.find(x=>x.id===item.productId);if(!p)return sum;const delta=p.groups.flatMap(g=>g.options).filter(o=>item.optionIds.includes(o.id)).reduce((n,o)=>n+Number(o.priceDeltaCop),0);return sum+(Number(p.priceCop)+delta)*item.quantity;},0);
+  const containsCafe=cart.some(item=>products.find(p=>p.id===item.productId)?.area==='cafe');const containsPaidHotel=cart.some(item=>{const p=products.find(x=>x.id===item.productId);return p?.area==='hotel'&&Number(p.priceCop)>0;});
+  async function checkout(e:FormEvent){e.preventDefault();setBusy(true);setNotice('');try{const result=await api<CheckoutResult>('/orders/checkout',{method:'POST',body:JSON.stringify({idempotencyKey:attemptKey,items:cart,cafePayment,hotelPayment,...((role!=='guest'||customer.whatsappOptIn)?{customer}:{}),tableCode:new URLSearchParams(location.search).get('mesa')??undefined})});setLastOrder(result);update([]);setNotice('Pedido recibido. Conserva tu número de pedido.');}catch(error){setNotice((error as Error).message);}finally{setBusy(false);}}
+  function goPay(details:NonNullable<CheckoutResult['onlineCheckout']>){const url=new URL(details.url);url.searchParams.set('public-key',details.publicKey);url.searchParams.set('currency',details.currency);url.searchParams.set('amount-in-cents',String(details.amountInCents));url.searchParams.set('reference',details.reference);url.searchParams.set('signature:integrity',details.signature);location.assign(url.href);}
+  return <section id="carta" className="menu-section"><div className="section-heading"><div><span className="kicker">{guestMode?'TODO A TU ALCANCE':'HECHO PARA DISFRUTAR'}</span><h2>{guestMode?'Servicios y carta para huéspedes':'Nuestra carta'}</h2></div><p>{guestMode?'Solicita lo que necesites y nosotros nos encargamos.':'Elige, personaliza y pide. Nosotros preparamos el resto.'}</p></div>{grouped.map(([category,list])=><section className="menu-category" key={category}><div className="category-title"><h3>{category}</h3><span>{list.length} {list.length===1?'opción':'opciones'}</span></div><div className="product-grid">{list.map(p=><article className="product" key={p.id}>{p.imageUrl?<img src={p.imageUrl} alt=""/>:<div className={`image-fallback ${p.area}`}><span>{p.area==='hotel'?'SERVICIO':'POSADA'}</span></div>}<div className="product-info"><span className="product-area">{p.area==='hotel'?'Habitación':'Café'}</span><h3>{p.name}</h3><p>{p.description}</p><div className="product-footer"><strong>{Number(p.priceCop)===0?'Incluido':cop(p.priceCop)}</strong><button className="round-button" onClick={()=>setConfiguring(p)} aria-label={`Agregar ${p.name}`}>+</button></div></div></article>)}</div></section>)}<aside className={`order-drawer ${cart.length?'has-items':''}`}><div className="order-title"><div><span className="kicker">TU SELECCIÓN</span><h2>Pedido · {cart.length}</h2></div>{cart.length>0&&<strong>{cop(estimate)}</strong>}</div>{!cart.length?<p className="empty-state">Agrega algo de la carta para comenzar.</p>:<form onSubmit={checkout} className="stack">{cart.map((item,i)=>{const p=products.find(x=>x.id===item.productId);return <div className="cart-line" key={i}><span><strong>{p?.name??'Producto'}</strong><small>1 unidad</small></span><button type="button" className="text-button" onClick={()=>update(cart.filter((_,j)=>j!==i))}>Quitar</button></div>;})}<div className="columns"><label>{role==='guest'?'Nombre para avisos (opcional)':'Nombre'}<input required={role!=='guest'||customer.whatsappOptIn} value={customer.name} onChange={e=>setCustomer({...customer,name:e.target.value})}/></label><label>Teléfono (+57…)<input required={role!=='guest'||customer.whatsappOptIn} type="tel" value={customer.phone} onChange={e=>setCustomer({...customer,phone:e.target.value})}/></label></div><label className="check"><input type="checkbox" checked={customer.whatsappOptIn} onChange={e=>setCustomer({...customer,whatsappOptIn:e.target.checked})}/> Quiero recibir actualizaciones por WhatsApp</label>{containsCafe&&<label>Pago del café<select value={cafePayment} onChange={e=>setCafePayment(e.target.value as 'cash'|'online')}><option value="cash">Efectivo en caja</option><option value="online">PSE / tarjeta en línea</option></select></label>}{containsPaidHotel&&<label>Servicios del hotel<select value={hotelPayment} onChange={e=>setHotelPayment(e.target.value as 'none'|'room_charge')}><option value="none">Selecciona un método</option><option value="room_charge">Cargar a la habitación</option></select></label>}<button disabled={busy}>{busy?'Confirmando…':`Confirmar pedido · ${cop(estimate)}`}</button></form>}{notice&&<p className="status" role="status">{notice}</p>}{lastOrder&&<div className="receipt"><span className="kicker">PEDIDO CONFIRMADO</span><strong>#{lastOrder.orderId.slice(0,8).toUpperCase()}</strong>{lastOrder.suborders.map(s=><p key={s.area}>{s.area==='cafe'?'Café':'Hotel'} · {s.status==='pending_payment'?'Paga en caja para iniciar':s.status==='waiting_gateway'?'Esperando pago':'Recibido'}</p>)}{lastOrder.onlineCheckout&&<button onClick={()=>goPay(lastOrder.onlineCheckout!)}>Continuar a Wompi</button>}<a href={`/seguimiento?pedido=${lastOrder.orderId}&token=${lastOrder.trackingToken}`}>Seguir mi pedido →</a></div>}</aside>{configuring&&<ProductSelector product={configuring} add={item=>{update([...cart,item]);setConfiguring(null);}} cancel={()=>setConfiguring(null)}/>}</section>;
 }
-function FollowOrder() {
-  const qs=new URLSearchParams(location.search),id=qs.get('pedido'),token=qs.get('token');
-  const [states,setStates]=useState<{area:string,status:string,paymentStatus:string}[]>([]);const [error,setError]=useState('');
-  useEffect(()=>{
-    if(!id||!token)return;
-    let stopped=false;
-    const poll=()=>api<{suborders:typeof states}>(`/orders/${encodeURIComponent(id)}/status?token=${encodeURIComponent(token)}`)
-      .then(r=>{if(!stopped)setStates(r.suborders);}).catch(e=>{if(!stopped)setError(e.message);});
-    poll();const timer=setInterval(poll,7000);
-    return()=>{stopped=true;clearInterval(timer);};
-  },[id,token]);
-  return <section className="stack"><h1>Seguimiento del pedido</h1>
-    {states.map(s=><article className="cart-panel" key={s.area}><h3>{s.area==='cafe'?'Café':'Hotel'}</h3><p>Estado: <strong>{s.status}</strong></p><p>Pago: {s.paymentStatus}</p></article>)}
-    {error&&<p role="alert">{error}</p>}<a href="/">Volver al menú</a></section>;
-}
-function StaffBoard({role}:{role:Role}) {
-  const areas:('cafe'|'hotel')[]=role==='admin'?['cafe','hotel']:['kitchen','cashier'].includes(role)?['cafe']:['hotel'];
-  const [area,setArea]=useState<'cafe'|'hotel'>(areas[0]!);
-  const [orders,setOrders]=useState<KanbanOrder[]>([]);
-  const [error,setError]=useState('');
-  const reload=useCallback(()=>api<KanbanOrder[]>(`/staff/kanban/${area}`).then(setOrders).catch(e=>setError(e.message)),[area]);
-  useEffect(()=>{reload();const socket=io('/staff');socket.on('suborder:update',(event:{area:string})=>{if(event.area===area)reload();});return()=>{socket.disconnect();};},[area,reload]);
-  const transition=async(id:string,status:string)=>{try{await api(`/staff/suborders/${id}/status`,{method:'PATCH',body:JSON.stringify({status})});reload();}catch(e){setError((e as Error).message);}};
-  const next=(o:KanbanOrder)=>o.area==='hotel' ?({queued:'dispatched',dispatched:'completed'} as Record<string,string>)[o.status]
-    :({pending_payment:'queued',queued:'preparing',preparing:'ready',ready:'completed'} as Record<string,string>)[o.status];
-  const authorized=(o:KanbanOrder)=>role==='admin'||o.area==='hotel'?['admin','reception','housekeeping'].includes(role)
-    :o.status==='pending_payment'?role==='cashier':o.status==='ready'?['kitchen','cashier'].includes(role):role==='kitchen';
-  return <section className="stack"><div className="inline"><h1>Panel operativo</h1><button className="secondary" onClick={()=>reload()}>Actualizar</button></div>
-    {areas.length>1&&<div className="inline">{areas.map(a=><button key={a} className={area===a?'':'secondary'} onClick={()=>setArea(a)}>{a==='cafe'?'Cocina y caja':'Recepción'}</button>)}</div>}
-    <div className="kanban">{['pending_payment','waiting_gateway','queued','preparing','ready','dispatched'].map(status=>{
-      const matches=orders.filter(o=>o.status===status);if(!matches.length)return null;
-      return <section className="kanban-column" key={status}><h3>{status.replaceAll('_',' ')} ({matches.length})</h3>
-        {matches.map(o=><article key={o.id} className="ticket"><strong>#{o.orderId.slice(0,8).toUpperCase()}</strong>
-          <p>{o.roomNumber?`Habitación ${o.roomNumber}`:o.tableCode?`Mesa ${o.tableCode}`:'Mostrador'} · {cop(o.totalCop)}</p>
-          <ul>{o.items.map((item,i)=><li key={i}>{item.quantity} × {item.name} {item.options.map(x=>x.name).join(', ')} {item.note&&`— ${item.note}`}</li>)}</ul>
-          {next(o)&&authorized(o)&&<button onClick={()=>transition(o.id,next(o)!)}>{o.status==='pending_payment'?'Confirmar efectivo':`Pasar a ${next(o)}`}</button>}
-        </article>)}
-      </section>;})}</div>{error&&<p role="alert">{error}</p>}</section>;
-}
-function Admin() {
-  const [products,setProducts]=useState<Product[]>([]),[editing,setEditing]=useState<Product|null>(null);
-  const [customers,setCustomers]=useState<{id:string,name:string,phone:string,visits:number,averageTicketCop:string}[]>([]);
-  const [roomNumber,setRoomNumber]=useState(''),[roomMessage,setRoomMessage]=useState('');
-  const [error,setError]=useState('');
-  const reload=()=>{api<Product[]>('/admin/products').then(setProducts).catch(e=>setError(e.message));
-    api<typeof customers>('/admin/customers').then(setCustomers).catch(e=>setError(e.message));};
-  useEffect(reload,[]);
-  const disabled=async(p:Product)=>{try{await api(`/admin/products/${p.id}/availability`,{method:'PATCH',body:JSON.stringify({isAvailable:!p.isAvailable})});reload();}catch(e){setError((e as Error).message);}};
-  const remove=async(p:Product)=>{if(!confirm(`¿Eliminar ${p.name}? Dejará de verse en el catálogo. El historial de pedidos se conserva.`))return;
-    try{await api(`/admin/products/${p.id}`,{method:'DELETE'});reload();}catch(e){setError((e as Error).message);}};
-  const createRoom=async(e:FormEvent)=>{e.preventDefault();try{await api('/admin/rooms',{method:'POST',body:JSON.stringify({roomNumber})});setRoomMessage('Habitación registrada');setRoomNumber('');}catch(e){setRoomMessage((e as Error).message);}};
-  return <div className="stack"><h1>Administración</h1><div className="admin-layout"><ProductForm editing={editing} onSaved={()=>{setEditing(null);reload();}}/>
-    <section className="stack"><h2>Catálogo</h2>{products.filter(p=>!('deletedAt' in p && p.deletedAt)).map(p=><article className="list-card" key={p.id}>
-      <strong>{p.name}</strong><span>{p.area} · {cop(p.priceCop)} · {p.isAvailable?'Disponible':'Agotado'}</span>
-      <div className="inline"><button className="secondary" onClick={()=>setEditing(p)}>Editar</button><button className="secondary" onClick={()=>disabled(p)}>{p.isAvailable?'Agotar':'Habilitar'}</button>
-        <button className="text-button" onClick={()=>remove(p)}>Eliminar</button></div>
-    </article>)}</section></div>
-    <form onSubmit={createRoom} className="cart-panel stack"><h2>Habitaciones</h2><label>Registrar habitación<input required value={roomNumber} onChange={e=>setRoomNumber(e.target.value)}/></label><button>Guardar habitación</button>{roomMessage&&<p role="status">{roomMessage}</p>}</form>
-    <section className="cart-panel"><h2>Clientes (pedidos completados)</h2><div className="table-scroll"><table><thead><tr><th>Cliente</th><th>Teléfono</th><th>Visitas</th><th>Ticket promedio</th></tr></thead><tbody>
-      {customers.map(c=><tr key={c.id}><td>{c.name}</td><td>{c.phone}</td><td>{c.visits}</td><td>{cop(c.averageTicketCop)}</td></tr>)}
-    </tbody></table></div></section>{error&&<p role="alert">{error}</p>}</div>;
-}
-function Reception() {
-  const [roomNumber,setRoomNumber]=useState(''),[checkoutAt,setCheckoutAt]=useState('');
-  const [created,setCreated]=useState<{pin:string,stayId:string}|null>(null),[revokeId,setRevokeId]=useState(''),[message,setMessage]=useState('');
-  async function generate(e:FormEvent){e.preventDefault();try{
-    const stay=await api<{pin:string,stayId:string}>('/reception/stays',{method:'POST',body:JSON.stringify({roomNumber,checkoutAt:new Date(checkoutAt).toISOString()})});
-    setCreated(stay);setMessage('PIN generado. Entrégalo de forma privada.');
-  }catch(e){setMessage((e as Error).message);}}
-  async function revoke(){try{await api(`/reception/stays/${revokeId}/revoke`,{method:'POST'});setCreated(null);setRevokeId('');setMessage('Acceso revocado');}catch(e){setMessage((e as Error).message);}}
-  return <section className="stack"><h1>Recepción · Accesos</h1><form onSubmit={generate} className="cart-panel stack">
-    <h2>Check-in y PIN temporal</h2><label>Número de habitación<input required value={roomNumber} onChange={e=>setRoomNumber(e.target.value)}/></label>
-    <label>Fecha y hora de checkout<input type="datetime-local" required value={checkoutAt} onChange={e=>setCheckoutAt(e.target.value)}/></label><button>Generar PIN</button></form>
-    {created&&<div className="receipt"><p>PIN de acceso</p><strong className="pin">{created.pin}</strong><p>Estancia: {created.stayId}</p></div>}
-    <section className="cart-panel stack"><h2>Revocar acceso</h2><label>ID de estancia<input value={revokeId} onChange={e=>setRevokeId(e.target.value)} placeholder="UUID de estancia"/></label>
-      <button className="danger" disabled={!revokeId} onClick={revoke}>Revocar acceso anticipadamente</button></section>
-    {message&&<p role="status">{message}</p>}
-  </section>;
-}
-function Login({onSuccess}:{onSuccess:()=>void}) {
-  const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[message,setMessage]=useState('');
-  async function login(e:FormEvent){e.preventDefault();try{await api('/staff/login',{method:'POST',body:JSON.stringify({email,password})});onSuccess();}catch(e){setMessage((e as Error).message);}}
-  return <form onSubmit={login} className="cart-panel stack" style={{maxWidth:450,margin:'5rem auto'}}><h1>Acceso personal</h1>
-    <label>Correo electrónico<input type="email" required value={email} onChange={e=>setEmail(e.target.value)}/></label>
-    <label>Contraseña<input type="password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button>Ingresar</button>
-    {message&&<p role="alert">{message}</p>}</form>;
-}
-export default function App() {
-  const [role,setRole]=useState<Role>('standard'),[loading,setLoading]=useState(true);
-  const [products,setProducts]=useState<Product[]>([]),[cart,setCart]=useState<CartItem[]>(readCart);
-  const [error,setError]=useState('');
-  const refresh=()=>api<{role:Role}>('/auth/session').then(({role})=>setRole(role)).catch(()=>setRole('standard')).finally(()=>setLoading(false));
-  useEffect(()=>{refresh();},[]);
-  useEffect(()=>{api<Product[]>('/catalog').then(setProducts).catch(e=>setError(e.message));},[role]);
-  useEffect(()=>{localStorage.setItem('cafe-hotel-cart',JSON.stringify(cart));},[cart]);
-  const staff=!['standard','guest'].includes(role);
-  if(location.pathname==='/seguimiento')return <main className="shell"><FollowOrder/></main>;
-  return <><header className="topbar"><a className="wordmark" href="/">CAFÉ <span>+</span> HOTEL</a><div className="inline">
-    {staff?<><span className="pill">{role}</span><button className="text-button" onClick={async()=>{await api('/auth/logout',{method:'POST'});location.reload();}}>Salir</button></>
-      :<a className="nav-link" href="/personal">Personal</a>}
-  </div></header><main className="shell">
-    {loading?<p>Cargando…</p>:location.pathname==='/personal'&&!staff?<Login onSuccess={refresh}/>
-      :staff? <div className="stack">{role==='admin'&&<Admin/>}
-        {['admin','kitchen','cashier','reception','housekeeping'].includes(role)&&<StaffBoard role={role}/>}
-        {['admin','reception'].includes(role)&&<Reception/>}</div>
-      :<Menu role={role} products={products} cart={cart} onCartChange={setCart}/>}
-    {error&&<p role="alert">{error}</p>}
-  </main><footer>Pedidos seguros · Café + Hotel</footer></>;
-}
+
+function GuestPortal({brand,onSuccess}:{brand:Brand,onSuccess:()=>void}){const [room,setRoom]=useState(''),[pin,setPin]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);async function enter(e:FormEvent){e.preventDefault();setBusy(true);setMessage('');try{await api('/guest/access',{method:'POST',body:JSON.stringify({roomNumber:room,pin})});onSuccess();}catch(error){setMessage((error as Error).message);}finally{setBusy(false);}}return <div className="guest-landing"><section className="guest-hero"><div><span className="kicker">EXPERIENCIA DE HUÉSPED</span><h1>{brand.guestTitle}</h1><p>{brand.guestDescription}</p><div className="guest-benefits"><span>Servicio a la habitación</span><span>Amenidades</span><span>Seguimiento en vivo</span></div></div><form className="access-card" onSubmit={enter}><span className="step-number">ACCESO PRIVADO</span><h2>Hola, qué gusto tenerte aquí</h2><p>Encontrarás el PIN en recepción. Se desactiva automáticamente al terminar tu estadía.</p><label>Número de habitación<input required autoComplete="off" value={room} onChange={e=>setRoom(e.target.value)} placeholder="Ej. 204"/></label><label>PIN de 4 dígitos<input required inputMode="numeric" pattern="[0-9]{4}" maxLength={4} type="password" value={pin} onChange={e=>setPin(e.target.value)} placeholder="••••"/></label><button disabled={busy}>{busy?'Verificando…':'Entrar a mi habitación'}</button>{message&&<p className="error" role="alert">{message}</p>}<small>Tu PIN es personal y temporal.</small></form></section><section className="guest-preview"><article><b>01</b><h3>Pide sin llamar</h3><p>Café, alimentos y productos disponibles desde el móvil.</p></article><article><b>02</b><h3>Solicita amenidades</h3><p>Toallas, limpieza y otros servicios, sin desplazarte.</p></article><article><b>03</b><h3>Sigue cada solicitud</h3><p>Consulta el estado hasta que llegue a tu habitación.</p></article></section></div>;}
+function FollowOrder(){const qs=new URLSearchParams(location.search),id=qs.get('pedido'),token=qs.get('token');const [states,setStates]=useState<{area:string,status:string,paymentStatus:string}[]>([]),[error,setError]=useState('');useEffect(()=>{if(!id||!token)return;let stopped=false;const poll=()=>api<{suborders:typeof states}>(`/orders/${encodeURIComponent(id)}/status?token=${encodeURIComponent(token)}`).then(r=>{if(!stopped)setStates(r.suborders);}).catch(e=>{if(!stopped)setError(e.message);});poll();const timer=setInterval(poll,7000);return()=>{stopped=true;clearInterval(timer);};},[id,token]);return <section className="track-page"><span className="kicker">SEGUIMIENTO</span><h1>Tu pedido</h1>{states.map(s=><article className="track-card" key={s.area}><span>{s.area==='cafe'?'Café':'Hotel'}</span><strong>{s.status.replaceAll('_',' ')}</strong><small>Pago: {s.paymentStatus}</small></article>)}{error&&<p className="error">{error}</p>}<a className="button" href="/">Volver al inicio</a></section>;}
+
+function StaffBoard({role}:{role:Role}){const areas:('cafe'|'hotel')[]=role==='admin'?['cafe','hotel']:['kitchen','cashier'].includes(role)?['cafe']:['hotel'];const [area,setArea]=useState<'cafe'|'hotel'>(areas[0]!),[orders,setOrders]=useState<KanbanOrder[]>([]),[error,setError]=useState('');const reload=useCallback(()=>api<KanbanOrder[]>(`/staff/kanban/${area}`).then(setOrders).catch(e=>setError(e.message)),[area]);useEffect(()=>{reload();const socket=io('/staff');socket.on('suborder:update',(event:{area:string})=>{if(event.area===area)reload();});return()=>{socket.disconnect();};},[area,reload]);const transition=async(id:string,status:string)=>{try{await api(`/staff/suborders/${id}/status`,{method:'PATCH',body:JSON.stringify({status})});reload();}catch(e){setError((e as Error).message);}};const next=(o:KanbanOrder)=>o.area==='hotel'?({queued:'dispatched',dispatched:'completed'} as Record<string,string>)[o.status]:({pending_payment:'queued',queued:'preparing',preparing:'ready',ready:'completed'} as Record<string,string>)[o.status];const authorized=(o:KanbanOrder)=>role==='admin'||o.area==='hotel'?['admin','reception','housekeeping'].includes(role):o.status==='pending_payment'?role==='cashier':o.status==='ready'?['kitchen','cashier'].includes(role):role==='kitchen';return <section className="panel-section"><div className="panel-heading"><div><span className="kicker">OPERACIÓN EN VIVO</span><h1>Pedidos</h1></div><button className="secondary" onClick={reload}>Actualizar</button></div>{areas.length>1&&<div className="segmented">{areas.map(a=><button key={a} className={area===a?'active':''} onClick={()=>setArea(a)}>{a==='cafe'?'Cocina y caja':'Hotel'}</button>)}</div>}<div className="kanban">{['pending_payment','waiting_gateway','queued','preparing','ready','dispatched'].map(status=>{const matches=orders.filter(o=>o.status===status);return <section className="kanban-column" key={status}><h3>{status.replaceAll('_',' ')} <span>{matches.length}</span></h3>{matches.map(o=><article className="ticket" key={o.id}><strong>#{o.orderId.slice(0,8).toUpperCase()}</strong><p>{o.roomNumber?`Habitación ${o.roomNumber}`:o.tableCode?`Mesa ${o.tableCode}`:'Mostrador'} · {cop(o.totalCop)}</p><ul>{o.items.map((item,i)=><li key={i}>{item.quantity} × {item.name} {item.options.map(x=>x.name).join(', ')}</li>)}</ul>{next(o)&&authorized(o)&&<button onClick={()=>transition(o.id,next(o)!)}>{o.status==='pending_payment'?'Confirmar efectivo':`Pasar a ${next(o)}`}</button>}</article>)}</section>;})}</div>{error&&<p className="error">{error}</p>}</section>;}
+
+function BrandForm({brand,onSaved}:{brand:Brand,onSaved:(b:Brand)=>void}){const [form,setForm]=useState(brand),[message,setMessage]=useState('');useEffect(()=>setForm(brand),[brand]);const set=(key:keyof Brand,value:string)=>setForm(v=>({...v,[key]:value}));async function submit(e:FormEvent){e.preventDefault();try{const saved=await api<Brand>('/admin/brand',{method:'PUT',body:JSON.stringify(form)});onSaved(saved);setMessage('Identidad visual actualizada');}catch(error){setMessage((error as Error).message);}}return <form className="settings-card stack" onSubmit={submit}><div className="panel-heading"><div><span className="kicker">MARCA BLANCA</span><h2>Identidad del negocio</h2></div><BrandMark brand={form} compact/></div><div className="columns"><label>Nombre completo<input value={form.name} onChange={e=>set('name',e.target.value)}/></label><label>Nombre corto<input value={form.shortName} onChange={e=>set('shortName',e.target.value)}/></label></div><label>Frase principal<input value={form.tagline} onChange={e=>set('tagline',e.target.value)}/></label><label>Descripción<textarea value={form.description} onChange={e=>set('description',e.target.value)}/></label><div className="columns"><label>URL del logo<input type="url" value={form.logoUrl??''} onChange={e=>set('logoUrl',e.target.value)}/></label><label>URL de imagen principal<input type="url" value={form.heroImageUrl??''} onChange={e=>set('heroImageUrl',e.target.value)}/></label></div><div className="color-grid">{([['primaryColor','Rojo principal'],['secondaryColor','Madera'],['accentColor','Acento'],['surfaceColor','Fondo']] as [keyof Brand,string][]).map(([key,label])=><label key={key}>{label}<span className="color-input"><input type="color" value={form[key] as string} onChange={e=>set(key,e.target.value)}/><input value={form[key] as string} onChange={e=>set(key,e.target.value)}/></span></label>)}</div><h3>Experiencia de huéspedes</h3><label>Título<input value={form.guestTitle} onChange={e=>set('guestTitle',e.target.value)}/></label><label>Descripción<textarea value={form.guestDescription} onChange={e=>set('guestDescription',e.target.value)}/></label><div className="columns"><label>Dirección<input value={form.address} onChange={e=>set('address',e.target.value)}/></label><label>Teléfono<input value={form.phone} onChange={e=>set('phone',e.target.value)}/></label></div><button>Guardar identidad</button>{message&&<p className="status">{message}</p>}</form>;}
+
+type StaffUser={id:string,email:string,displayName:string,role:'admin'|'reception'|'kitchen'|'cashier'|'housekeeping',isActive:boolean};const roleLabels={admin:'Administración',reception:'Recepción',kitchen:'Cocina',cashier:'Caja',housekeeping:'Habitaciones'};
+function StaffManager(){const [users,setUsers]=useState<StaffUser[]>([]),[form,setForm]=useState({displayName:'',email:'',password:'',role:'reception' as StaffUser['role']}),[message,setMessage]=useState(''),[resetId,setResetId]=useState<string|null>(null),[newPassword,setNewPassword]=useState('');const reload=()=>api<StaffUser[]>('/admin/staff').then(setUsers).catch(e=>setMessage(e.message));useEffect(()=>{void reload();},[]);async function create(e:FormEvent){e.preventDefault();try{await api('/admin/staff',{method:'POST',body:JSON.stringify(form)});setForm({displayName:'',email:'',password:'',role:'reception'});setMessage('Cuenta creada');reload();}catch(error){setMessage((error as Error).message);}}async function update(u:StaffUser,patch:Partial<StaffUser>){try{await api(`/admin/staff/${u.id}`,{method:'PATCH',body:JSON.stringify({...u,...patch})});reload();}catch(error){setMessage((error as Error).message);}}async function reset(e:FormEvent,id:string){e.preventDefault();try{await api(`/admin/staff/${id}/password`,{method:'PUT',body:JSON.stringify({password:newPassword})});setResetId(null);setNewPassword('');setMessage('Contraseña actualizada');}catch(error){setMessage((error as Error).message);}}return <div className="admin-grid"><form className="settings-card stack" onSubmit={create}><span className="kicker">NUEVA CUENTA</span><h2>Agregar personal</h2><label>Nombre<input required value={form.displayName} onChange={e=>setForm({...form,displayName:e.target.value})}/></label><label>Correo<input required type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Contraseña temporal<input required type="password" minLength={12} value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>Mínimo 12 caracteres. Entrégala de forma privada.</small></label><label>Rol<select value={form.role} onChange={e=>setForm({...form,role:e.target.value as StaffUser['role']})}>{Object.entries(roleLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><button>Crear cuenta</button></form><section className="settings-card stack"><div><span className="kicker">EQUIPO</span><h2>Cuentas activas</h2></div>{users.map(u=><article className={`staff-row ${u.isActive?'':'disabled'}`} key={u.id}><div><strong>{u.displayName}</strong><span>{u.email}</span></div><select aria-label={`Rol de ${u.displayName}`} value={u.role} onChange={e=>update(u,{role:e.target.value as StaffUser['role']})}>{Object.entries(roleLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select><button className="secondary" onClick={()=>update(u,{isActive:!u.isActive})}>{u.isActive?'Desactivar':'Activar'}</button><button className="text-button" onClick={()=>setResetId(resetId===u.id?null:u.id)}>Contraseña</button>{resetId===u.id&&<form className="reset-row" onSubmit={e=>reset(e,u.id)}><input required type="password" minLength={12} value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="Nueva contraseña (12+ caracteres)"/><button>Actualizar</button></form>}</article>)}{message&&<p className="status">{message}</p>}</section></div>;}
+
+function Reception(){const [roomNumber,setRoomNumber]=useState(''),[checkoutAt,setCheckoutAt]=useState(''),[created,setCreated]=useState<{pin:string,stayId:string}|null>(null),[revokeId,setRevokeId]=useState(''),[message,setMessage]=useState('');async function generate(e:FormEvent){e.preventDefault();try{const stay=await api<{pin:string,stayId:string}>('/reception/stays',{method:'POST',body:JSON.stringify({roomNumber,checkoutAt:new Date(checkoutAt).toISOString()})});setCreated(stay);setMessage('PIN generado. Entrégalo de forma privada.');}catch(error){setMessage((error as Error).message);}}async function revoke(){try{await api(`/reception/stays/${revokeId}/revoke`,{method:'POST'});setCreated(null);setRevokeId('');setMessage('Acceso revocado');}catch(error){setMessage((error as Error).message);}}return <div className="admin-grid"><form onSubmit={generate} className="settings-card stack"><span className="kicker">CHECK-IN</span><h2>Crear acceso de huésped</h2><label>Habitación<input required value={roomNumber} onChange={e=>setRoomNumber(e.target.value)}/></label><label>Fecha y hora de salida<input type="datetime-local" required value={checkoutAt} onChange={e=>setCheckoutAt(e.target.value)}/></label><button>Generar PIN temporal</button>{created&&<div className="pin-card"><small>PIN de la habitación</small><strong>{created.pin}</strong><span>ID: {created.stayId}</span></div>}</form><section className="settings-card stack"><span className="kicker">CONTROL DE ACCESO</span><h2>Revocar estancia</h2><p>Invalida inmediatamente el PIN y la sesión del huésped.</p><label>ID de estancia<input value={revokeId} onChange={e=>setRevokeId(e.target.value)} placeholder="UUID de estancia"/></label><button className="danger" disabled={!revokeId} onClick={revoke}>Revocar acceso</button></section>{message&&<p className="status">{message}</p>}</div>;}
+
+function CatalogAdmin(){const [products,setProducts]=useState<Product[]>([]),[editing,setEditing]=useState<Product|null>(null),[error,setError]=useState('');const reload=()=>api<Product[]>('/admin/products').then(setProducts).catch(e=>setError(e.message));useEffect(()=>{void reload();},[]);const availability=async(p:Product)=>{await api(`/admin/products/${p.id}/availability`,{method:'PATCH',body:JSON.stringify({isAvailable:!p.isAvailable})});reload();};const remove=async(p:Product)=>{if(!confirm(`¿Retirar ${p.name} de la carta?`))return;await api(`/admin/products/${p.id}`,{method:'DELETE'});reload();};return <div className="admin-grid catalog-admin"><ProductForm editing={editing} onSaved={()=>{setEditing(null);reload();}}/><section className="settings-card stack"><div><span className="kicker">CARTA ACTUAL</span><h2>{products.filter(p=>!p.deletedAt).length} productos</h2></div>{products.filter(p=>!p.deletedAt).map(p=><article className="catalog-row" key={p.id}><div><strong>{p.name}</strong><span>{p.category} · {cop(p.priceCop)} · {p.area==='hotel'?'Huéspedes':'Café'}</span></div><span className={`availability ${p.isAvailable?'on':'off'}`}>{p.isAvailable?'Disponible':'Agotado'}</span><div><button className="secondary" onClick={()=>setEditing(p)}>Editar</button><button className="text-button" onClick={()=>availability(p)}>{p.isAvailable?'Agotar':'Habilitar'}</button><button className="text-button" onClick={()=>remove(p)}>Retirar</button></div></article>)}{error&&<p className="error">{error}</p>}</section></div>;}
+function Customers(){const [customers,setCustomers]=useState<{id:string,name:string,phone:string,visits:number,averageTicketCop:string}[]>([]);useEffect(()=>{api<typeof customers>('/admin/customers').then(setCustomers);},[]);return <section className="settings-card"><span className="kicker">RELACIÓN CON CLIENTES</span><h2>Clientes con pedidos completados</h2><div className="table-scroll"><table><thead><tr><th>Cliente</th><th>Teléfono</th><th>Visitas</th><th>Ticket promedio</th></tr></thead><tbody>{customers.map(c=><tr key={c.id}><td>{c.name}</td><td>{c.phone}</td><td>{c.visits}</td><td>{cop(c.averageTicketCop)}</td></tr>)}</tbody></table></div></section>;}
+function Integrations(){const [data,setData]=useState<any>(null);useEffect(()=>{api('/admin/integrations').then(setData);},[]);if(!data)return <p>Cargando…</p>;return <div className="integration-grid"><article className="integration-card"><span className="integration-icon">W</span><div><h3>Wompi</h3><p>Pagos PSE y tarjetas mediante checkout seguro.</p><b className={data.payments.configured?'ok':'pending'}>{data.payments.configured?`Configurado · ${data.payments.environment}`:'Pendiente de Sandbox'}</b></div></article><article className="integration-card"><span className="integration-icon">WA</span><div><h3>WhatsApp</h3><p>Avisos de pedido listo y servicios enviados.</p><b className={data.whatsapp.configured?'ok':'pending'}>{data.whatsapp.configured?'Configurado':'Pendiente'}</b></div></article><article className="integration-card"><span className="integration-icon">IMG</span><div><h3>Imágenes</h3><p>Almacenamiento de logos y fotografías de productos.</p><b className={data.storage.configured?'ok':'pending'}>{data.storage.configured?'Configurado':'Usar URL por ahora'}</b></div></article><p className="integration-note">Las credenciales se configuran como secretos del servidor. Los pagos reales permanecen desactivados hasta aprobar las condiciones y tarifas del proveedor.</p></div>;}
+
+type AdminTab='operacion'|'marca'|'carta'|'equipo'|'huespedes'|'clientes'|'integraciones';
+function Admin({brand,onBrand}:{brand:Brand,onBrand:(b:Brand)=>void}){const [tab,setTab]=useState<AdminTab>('operacion');const tabs:[AdminTab,string][]=[['operacion','Pedidos'],['marca','Marca'],['carta','Carta'],['equipo','Personal'],['huespedes','Huéspedes'],['clientes','Clientes'],['integraciones','Integraciones']];return <div className="admin-shell"><aside className="admin-sidebar"><BrandMark brand={brand}/><div className="admin-nav">{tabs.map(([id,label])=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}>{label}</button>)}</div><button className="logout" onClick={async()=>{await api('/auth/logout',{method:'POST'});location.href='/';}}>Cerrar sesión</button></aside><main className="admin-content">{tab==='operacion'&&<StaffBoard role="admin"/>}{tab==='marca'&&<BrandForm brand={brand} onSaved={onBrand}/>} {tab==='carta'&&<CatalogAdmin/>}{tab==='equipo'&&<StaffManager/>}{tab==='huespedes'&&<Reception/>}{tab==='clientes'&&<Customers/>}{tab==='integraciones'&&<Integrations/>}</main></div>;}
+function Login({brand,onSuccess}:{brand:Brand,onSuccess:()=>void}){const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[message,setMessage]=useState('');async function login(e:FormEvent){e.preventDefault();try{await api('/staff/login',{method:'POST',body:JSON.stringify({email,password})});onSuccess();}catch(error){setMessage((error as Error).message);}}return <div className="login-page"><section><BrandMark brand={brand}/><span className="kicker">ACCESO AL EQUIPO</span><h1>Todo el servicio,<br/>en un solo lugar.</h1><p>Gestiona pedidos, carta, huéspedes y operación desde un panel pensado para trabajar rápido.</p></section><form onSubmit={login} className="access-card"><h2>Ingresar</h2><label>Correo electrónico<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} autoComplete="username"/></label><label>Contraseña<input type="password" required value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password"/></label><button>Entrar al panel</button>{message&&<p className="error">{message}</p>}<a href="/">← Volver al sitio</a></form></div>;}
+
+export default function App(){const [role,setRole]=useState<Role>('standard'),[loading,setLoading]=useState(true),[products,setProducts]=useState<Product[]>([]),[cart,setCart]=useState<CartItem[]>(readCart),[brand,setBrand]=useState<Brand>(defaultBrand),[error,setError]=useState('');const refresh=()=>api<{role:Role}>('/auth/session').then(({role})=>setRole(role)).catch(()=>setRole('standard')).finally(()=>setLoading(false));useEffect(()=>{refresh();api<Brand>('/brand').then(b=>{setBrand(b);document.title=b.name;}).catch(()=>undefined);},[]);useEffect(()=>{api<Product[]>('/catalog').then(setProducts).catch(e=>setError(e.message));},[role]);useEffect(()=>{localStorage.setItem('cafe-hotel-cart',JSON.stringify(cart));},[cart]);useEffect(()=>{document.documentElement.style.setProperty('--brand',brand.primaryColor);document.documentElement.style.setProperty('--wood',brand.secondaryColor);document.documentElement.style.setProperty('--accent',brand.accentColor);document.documentElement.style.setProperty('--surface',brand.surfaceColor);},[brand]);if(loading)return <div className="page-loader"><BrandMark brand={brand}/><span>Cargando experiencia…</span></div>;if(location.pathname==='/seguimiento')return <><Header brand={brand} role={role}/><main className="shell"><FollowOrder/></main></>;if(location.pathname==='/personal')return role==='admin'?<Admin brand={brand} onBrand={setBrand}/>:!['standard','guest'].includes(role)?<><Header brand={brand} role={role}/><main className="shell"><StaffBoard role={role}/>{role==='reception'&&<Reception/>}</main></>:<Login brand={brand} onSuccess={refresh}/>;if(location.pathname==='/huespedes')return <><Header brand={brand} role={role}/><main className="shell">{role==='guest'?<><section className="guest-session"><span className="kicker">ESTADÍA ACTIVA</span><h1>¿Qué podemos llevarte?</h1><p>Explora los servicios del hotel y la carta del café.</p></section><Menu role={role} products={products} cart={cart} onCartChange={setCart} guestMode/></>:<GuestPortal brand={brand} onSuccess={refresh}/>}</main><Footer brand={brand}/></>;return <><Header brand={brand} role={role}/><main className="shell"><HomeHero brand={brand}/><FeatureStrip/><Menu role={role} products={products} cart={cart} onCartChange={setCart}/>{error&&<p className="error">{error}</p>}<section className="closing-cta"><span className="kicker">¿TE HOSPEDAS CON NOSOTROS?</span><h2>Tu habitación también tiene servicio digital.</h2><a className="button ghost-light" href="/huespedes">Entrar como huésped →</a></section></main><Footer brand={brand}/></>;}
+function Footer({brand}:{brand:Brand}){return <footer><BrandMark brand={brand} compact/><div><span>{brand.address||brand.tagline}</span>{brand.phone&&<span>{brand.phone}</span>}</div><small>Pedidos seguros · Experiencia personalizada</small></footer>;}

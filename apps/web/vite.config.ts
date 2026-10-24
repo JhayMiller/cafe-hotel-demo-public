@@ -4,8 +4,8 @@ import {VitePWA} from 'vite-plugin-pwa';
 export default defineConfig({
   plugins:[react(),VitePWA({
     registerType:'autoUpdate',includeAssets:[],manifest:{
-      name:'Café + Hotel — Pedidos',short_name:'Café Hotel',description:'Pedidos y servicios desde la mesa o habitación',
-      start_url:'/',display:'standalone',background_color:'#f7f6f2',theme_color:'#1f493d',
+      name:'Posada del Puerto | café hotel',short_name:'Posada del Puerto',description:'Café, descanso y servicio desde la mesa o habitación',
+      start_url:'/',display:'standalone',background_color:'#F4EDE3',theme_color:'#9B1C1F',
       icons:[{src:'/icon.svg',sizes:'any',type:'image/svg+xml',purpose:'any'}]
     },workbox:{navigateFallback:'/index.html',runtimeCaching:[]}
   })],
