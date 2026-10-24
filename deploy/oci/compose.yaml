@@ -1,0 +1,91 @@
+# Ejecutar desde la carpeta deploy/oci: docker compose --env-file .env up -d --build
+# Nunca compartir .env ni exponer PostgreSQL o API a Internet.
+name: cafe-hotel
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:?DB_USER no definido}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD no definido}
+      POSTGRES_DB: ${DB_NAME:?DB_NAME no definido}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Se ejecuta solo en la creación inicial del volumen PostgreSQL.
+      - ../../apps/api/sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+    security_opt:
+      - no-new-privileges:true
+    networks: [backend]
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DATABASE_URL: postgres://${DB_USER:?}:${DB_PASSWORD:?}@db:5432/${DB_NAME:?}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET no definido}
+      PIN_PEPPER: ${PIN_PEPPER:?PIN_PEPPER no definido}
+      WEB_ORIGIN: https://${APP_HOST:?APP_HOST no definido}
+      WOMPI_PUBLIC_KEY: ${WOMPI_PUBLIC_KEY:-}
+      WOMPI_INTEGRITY_SECRET: ${WOMPI_INTEGRITY_SECRET:-}
+      WOMPI_EVENTS_SECRET: ${WOMPI_EVENTS_SECRET:-}
+      WOMPI_ENV: test
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-}
+      STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:-}
+      STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_GRAPH_VERSION: ${WHATSAPP_GRAPH_VERSION:-v23.0}
+      WHATSAPP_TEMPLATE_READY: ${WHATSAPP_TEMPLATE_READY:-}
+      WHATSAPP_TEMPLATE_DISPATCHED: ${WHATSAPP_TEMPLATE_DISPATCHED:-}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    networks: [backend]
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      APP_HOST: ${APP_HOST:?APP_HOST no definido}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+    networks: [backend]
+
+networks:
+  backend:
+    driver: bridge
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

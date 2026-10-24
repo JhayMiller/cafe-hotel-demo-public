@@ -1,0 +1,24 @@
+# APP_HOST debe ser un nombre DNS público dirigido a la IP de la VM.
+# Caddy obtiene y renueva automáticamente el certificado HTTPS.
+{$APP_HOST} {
+  encode zstd gzip
+
+  handle /api/* {
+    reverse_proxy api:4000
+  }
+
+  handle /socket.io/* {
+    reverse_proxy api:4000
+  }
+
+  handle {
+    root * /srv
+    try_files {path} /index.html
+    file_server
+  }
+
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy strict-origin-when-cross-origin
+  }
+}
