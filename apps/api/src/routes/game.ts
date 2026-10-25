@@ -7,7 +7,7 @@ import {sha256} from '../lib/wompi.js';
 import {assessParty,consumptionFromRows} from '../lib/game-capacity.js';
 import {replayFlight} from '../lib/game-engine.js';
 import {earnedReward,earnsRecordBonus,type RewardDefinition} from '../lib/game-rewards.js';
-import {canStartGame,remainingGames} from '../lib/game-access.js';
+import {gameAllowance} from '../lib/game-access.js';
 
 export const gameRouter=Router();
 const uuid=z.uuid(),tokenSchema=z.string().regex(/^[a-f0-9]{64}$/),deviceSchema=z.string().min(24).max(100);
@@ -43,12 +43,13 @@ async function paidCapacity(c:Pick<DB,'query'>,orderId:string,trackingHash:strin
 gameRouter.get('/game/eligibility',async(req,res)=>{
   const orderId=uuid.parse(req.query.orderId),trackingToken=tokenSchema.parse(req.query.trackingToken);
   const eligibility=await paidCapacity(pool as unknown as Pick<DB,'query'>,orderId,sha256(trackingToken));
-  const sessions=await pool.query('SELECT COUNT(*)::int AS count FROM game_sessions WHERE order_id=$1',[orderId]);
-  const gamesUsed=Number(sessions.rows[0]?.count??0);
+  const sessions=await pool.query('SELECT COUNT(*)::int AS count,MAX(created_at) AS last_created_at FROM game_sessions WHERE order_id=$1',[orderId]);
+  const allowance=gameAllowance(Number(sessions.rows[0]?.count??0),sessions.rows[0]?.last_created_at??null);
   res.setHeader('Cache-Control','no-store');
   res.json({maxPlayers:eligibility.supportedPlayers,totalUnits:eligibility.totalUnits,counts:eligibility.counts,
-    hasTable:Boolean(eligibility.table_code),unrestricted:eligibility.unrestricted,gamesUsed,
-    gamesRemaining:eligibility.unrestricted?null:remainingGames(gamesUsed)});
+    hasTable:Boolean(eligibility.table_code),unrestricted:eligibility.unrestricted,
+    gamesUsed:eligibility.unrestricted?0:allowance.gamesUsed,gamesRemaining:eligibility.unrestricted?null:allowance.gamesRemaining,
+    nextAvailableAt:eligibility.unrestricted?null:allowance.nextAvailableAt});
 });
 
 gameRouter.post('/staff/table-visits/:id/close',needStaff('admin','cashier'),async(req,res)=>{
@@ -71,8 +72,9 @@ gameRouter.post('/game/sessions',async(req,res)=>{
       : eligible.table_code?normalizeTable(eligible.table_code):null;
     if(mode==='friends'&&!key&&!eligible.unrestricted)throw new HttpError(422,'El modo Amigos requiere un pedido asociado a una mesa');
     if(!eligible.unrestricted){
-      const used=await c.query('SELECT COUNT(*)::int AS count FROM game_sessions WHERE order_id=$1',[input.orderId]);
-      if(!canStartGame(Number(used.rows[0]?.count??0)))throw new HttpError(409,'Este pedido ya utilizó sus tres partidas disponibles');
+      const used=await c.query('SELECT COUNT(*)::int AS count,MAX(created_at) AS last_created_at FROM game_sessions WHERE order_id=$1',[input.orderId]);
+      const allowance=gameAllowance(Number(used.rows[0]?.count??0),used.rows[0]?.last_created_at??null);
+      if(!allowance.canStart)throw new HttpError(409,`Este pedido ya utilizó sus tres partidas. Se habilitará nuevamente a las ${allowance.nextAvailableAt}.`);
     }
     await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`game-table:${key??input.orderId}`]);
     let visitId:string|null=null;
@@ -92,9 +94,11 @@ gameRouter.post('/game/sessions',async(req,res)=>{
     const made=await c.query(`INSERT INTO game_sessions(order_id,customer_id,device_hash,mode,player_count,entitlement_id,table_key) VALUES($1,$2,$3,$4,$5,$6,$7)
       RETURNING id,nonce,mode,player_count AS "playerCount",current_player AS "currentPlayer",expires_at AS "expiresAt"`,[input.orderId,eligible.customer_id,fingerprint,mode,input.playerCount,entitlementId,key]);
     await c.query(`UPDATE game_entitlements SET status='claimed',claimed_at=now() WHERE id=$1`,[entitlementId]);
-    const count=await c.query('SELECT COUNT(*)::int AS count FROM game_sessions WHERE order_id=$1',[input.orderId]);
-    const gamesUsed=Number(count.rows[0]?.count??0);
-    return {...made.rows[0],unrestricted:eligible.unrestricted,gamesUsed,gamesRemaining:eligible.unrestricted?null:remainingGames(gamesUsed)};
+    const count=await c.query('SELECT COUNT(*)::int AS count,MAX(created_at) AS last_created_at FROM game_sessions WHERE order_id=$1',[input.orderId]);
+    const allowance=gameAllowance(Number(count.rows[0]?.count??0),count.rows[0]?.last_created_at??null);
+    return {...made.rows[0],unrestricted:eligible.unrestricted,
+      gamesUsed:eligible.unrestricted?0:allowance.gamesUsed,gamesRemaining:eligible.unrestricted?null:allowance.gamesRemaining,
+      nextAvailableAt:eligible.unrestricted?null:allowance.nextAvailableAt};
   });
   const eligibility=await paidCapacity(pool as unknown as Pick<DB,'query'>,input.orderId,sha256(input.trackingToken));
   const assessment=eligibility.unrestricted
