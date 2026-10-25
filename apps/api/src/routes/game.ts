@@ -5,6 +5,8 @@ import {pool,inTransaction,HttpError,type DB} from '../lib/db.js';
 import {needStaff} from '../lib/auth.js';
 import {sha256} from '../lib/wompi.js';
 import {assessParty,consumptionFromRows} from '../lib/game-capacity.js';
+import {replayFlight} from '../lib/game-engine.js';
+import {earnedReward,earnsRecordBonus,type RewardDefinition} from '../lib/game-rewards.js';
 
 export const gameRouter=Router();
 const uuid=z.uuid(),tokenSchema=z.string().regex(/^[a-f0-9]{64}$/),deviceSchema=z.string().min(24).max(100);
@@ -107,7 +109,9 @@ gameRouter.post('/game/sessions',async(req,res)=>{
   const assessment=eligibility.unrestricted
     ? {confidence:'unrestricted' as const,reason:'Perfil de pruebas sin límites de partidas.'}
     : assessParty(eligibility.counts,input.playerCount,MAX_PLAYERS);
-  res.status(201).json({...session,confidence:assessment.confidence,validationMessage:assessment.reason,sessionToken:sign('game-session',session.id,session.nonce)});
+  const practice=await pool.query('SELECT practice_completed_at FROM customer_game_stats WHERE customer_id=$1',[eligibility.customer_id]);
+  res.status(201).json({...session,confidence:assessment.confidence,validationMessage:assessment.reason,
+    needsPractice:!practice.rows[0]?.practice_completed_at,sessionToken:sign('game-session',session.id,session.nonce)});
 });
 
 const sessionAccess=z.object({sessionId:uuid,sessionToken:tokenSchema});
@@ -123,39 +127,34 @@ gameRouter.post('/game/attempts',async(req,res)=>{
   res.status(201).json({...attempt,attemptToken:sign('game-attempt',attempt.id,attempt.nonce)});
 });
 
+gameRouter.post('/game/practice/complete',async(req,res)=>{
+  const input=sessionAccess.parse(req.body);
+  await inTransaction(async c=>{
+    const found=await c.query('SELECT id,nonce,customer_id,status,expires_at FROM game_sessions WHERE id=$1 FOR UPDATE',[input.sessionId]);
+    const session=found.rows[0];
+    if(!session||!validSignature(input.sessionToken,sign('game-session',session.id,session.nonce)))throw new HttpError(403,'Sesión de práctica inválida');
+    if(session.status!=='active'||new Date(session.expires_at)<=new Date())throw new HttpError(409,'La sesión terminó antes de guardar la práctica');
+    await c.query(`INSERT INTO customer_game_stats(customer_id,practice_completed_at)
+      VALUES($1,now()) ON CONFLICT(customer_id) DO UPDATE
+      SET practice_completed_at=COALESCE(customer_game_stats.practice_completed_at,now()),updated_at=now()`,[session.customer_id]);
+  });
+  res.json({completed:true});
+});
+
 const finishInput=z.object({attemptToken:tokenSchema,durationMs:z.number().int().min(500).max(600000),flaps:z.array(z.number().int().min(0).max(600000)).max(3000)});
-type Reward={key:string,scope:'customer'|'table',title:string,description:string,days:number};
-function earnedReward(mode:string,score:number,players:number):Reward|null{
-  if(mode==='individual'){
-    if(score>=35)return {key:'individual-coffee',scope:'customer',title:'Café de la casa gratis',description:'Válido en una visita futura. No canjeable por dinero.',days:30};
-    if(score>=20)return {key:'individual-15',scope:'customer',title:'15% de descuento',description:'En una compra futura, máximo $15.000 COP. No acumulable.',days:30};
-    if(score>=10)return {key:'individual-10',scope:'customer',title:'10% de descuento',description:'En una compra futura, máximo $10.000 COP. No acumulable.',days:21};
-  }else{const average=Math.floor(score/players);if(average>=20)return {key:'friends-10',scope:'table',title:'10% para toda la mesa',description:'En una visita futura, máximo $20.000 COP. No acumulable.',days:21};if(average>=12)return {key:'friends-5',scope:'table',title:'5% para toda la mesa',description:'En una visita futura, máximo $10.000 COP. No acumulable.',days:21};if(average>=7)return {key:'friends-tasting',scope:'table',title:'Detalle para compartir',description:'Pregunta por el detalle disponible en una próxima visita.',days:14};}
-  return null;
-}
-
-function replay(seed:number,flaps:number[],claimedDuration:number){
-  let state=seed|0,y=285,vy=0,score=0,spawnAt=1650,flapIndex=0;const palms:{x:number,gapY:number,passed:boolean}[]=[];
-  const random=()=>{state^=state<<13;state^=state>>>17;state^=state<<5;return (state>>>0)/4294967296;};
-  const stepMs=1000/60,totalSteps=Math.ceil(claimedDuration/stepMs);let endedAt=totalSteps*stepMs;
-  for(let step=1;step<=totalSteps;step++){
-    const now=step*stepMs;while(flapIndex<flaps.length&&flaps[flapIndex]!<=now){vy=-390;flapIndex++;}vy+=1120/60;y+=vy/60;
-    while(now>=spawnAt){palms.push({x:405,gapY:160+random()*270,passed:false});spawnAt+=1650;}
-    for(const p of palms){p.x-=138/60;if(!p.passed&&p.x+58<82){p.passed=true;score++;}const inX=106>p.x&&58<p.x+58,safe=y-18>p.gapY-82&&y+18<p.gapY+82;if(inX&&!safe)return {score,durationMs:Math.round(now)};}
-    if(y<12||y>592)return {score,durationMs:Math.round(now)};
-  }
-  return {score,durationMs:Math.round(endedAt)};
-}
-
 gameRouter.post('/game/attempts/:id/finish',async(req,res)=>{
   const attemptId=uuid.parse(req.params.id),input=finishInput.parse(req.body);
   const result=await inTransaction(async c=>{
     const a=await c.query(`SELECT a.*,s.mode,s.player_count,s.customer_id,s.order_id,s.status session_status,s.entitlement_id FROM game_attempts a JOIN game_sessions s ON s.id=a.session_id WHERE a.id=$1 FOR UPDATE OF a,s`,[attemptId]),attempt=a.rows[0];
     if(!attempt||!validSignature(input.attemptToken,sign('game-attempt',attempt.id,attempt.nonce)))throw new HttpError(403,'Intento inválido');
     if(attempt.status!=='active'||attempt.session_status!=='active')throw new HttpError(409,'El intento ya terminó');
-    const elapsed=Date.now()-new Date(attempt.started_at).getTime();if(input.durationMs>elapsed+8000||input.flaps.some((v:number,i:number)=>i>0&&v<input.flaps[i-1]!))throw new HttpError(422,'La repetición del intento no es válida');
-    const verified=replay(attempt.seed,input.flaps,input.durationMs);
-    if(Math.abs(verified.durationMs-input.durationMs)>100){await c.query(`INSERT INTO game_security_events(order_id,game_session_id,game_attempt_id,event_type,details) VALUES($1,$2,$3,'replay_mismatch',$4)`,[attempt.order_id,attempt.session_id,attempt.id,JSON.stringify({reported:input.durationMs,verified:verified.durationMs})]);throw new HttpError(422,'El resultado no pudo verificarse');}
+    const elapsed=Date.now()-new Date(attempt.started_at).getTime();
+    if(input.durationMs>elapsed+8000)throw new HttpError(422,'El teléfono informó una duración posterior al tiempo real de la partida. El intento no se guardó; inicia uno nuevo.');
+    if(input.flaps.some((value:number,index:number)=>index>0&&value<input.flaps[index-1]!))throw new HttpError(422,'Los impulsos llegaron fuera de orden. El intento no se guardó; inicia uno nuevo.');
+    if(input.flaps.some((value:number)=>value>input.durationMs+100))throw new HttpError(422,'Un impulso quedó fuera de la duración informada. El intento no se guardó; inicia uno nuevo.');
+    const verified=replayFlight(attempt.seed,input.flaps,input.durationMs);
+    const durationDifference=Math.abs(verified.durationMs-input.durationMs),adjusted=durationDifference>100;
+    if(adjusted)await c.query(`INSERT INTO game_security_events(order_id,game_session_id,game_attempt_id,event_type,details) VALUES($1,$2,$3,'replay_adjusted',$4)`,[attempt.order_id,attempt.session_id,attempt.id,JSON.stringify({reported:input.durationMs,verified:verified.durationMs,difference:durationDifference})]);
     const score=verified.score;await c.query(`UPDATE game_attempts SET status='completed',score=$2,duration_ms=$3,flap_count=$4,completed_at=now() WHERE id=$1`,[attempt.id,score,verified.durationMs,input.flaps.length]);
     const aggregate=await c.query(`SELECT COALESCE(SUM(score),0)::int total,COALESCE(MAX(score),0)::int best,COUNT(*)::int played FROM game_attempts WHERE session_id=$1 AND status='completed'`,[attempt.session_id]);
     const {total,best,played}=aggregate.rows[0],complete=played>=attempt.player_count;
@@ -164,11 +163,15 @@ gameRouter.post('/game/attempts/:id/finish',async(req,res)=>{
     if(complete){
       const previous=await c.query('SELECT best_score FROM customer_game_stats WHERE customer_id=$1 FOR UPDATE',[attempt.customer_id]),oldBest=previous.rows[0]?.best_score??0;recordBroken=attempt.mode==='individual'&&score>oldBest;
       await c.query(`INSERT INTO customer_game_stats(customer_id,best_score,last_individual_play_at,games_played) VALUES($1,$2,CASE WHEN $3='individual' THEN now() ELSE NULL END,1) ON CONFLICT(customer_id) DO UPDATE SET best_score=GREATEST(customer_game_stats.best_score,EXCLUDED.best_score),last_individual_play_at=CASE WHEN $3='individual' THEN now() ELSE customer_game_stats.last_individual_play_at END,games_played=customer_game_stats.games_played+1,updated_at=now()`,[attempt.customer_id,best,attempt.mode]);
-      const definitions:Reward[]=[];const main=earnedReward(attempt.mode,total,attempt.player_count);if(main)definitions.push(main);if(recordBroken&&oldBest>0)definitions.push({key:'record-bonus',scope:'customer',title:'Bono por nuevo récord',description:'5% adicional en una compra futura, máximo $5.000 COP.',days:14});
+      const definitions:RewardDefinition[]=[];const main=earnedReward(attempt.mode,total,attempt.player_count);if(main)definitions.push(main);if(earnsRecordBonus(oldBest,score))definitions.push({key:'record-bonus',scope:'customer',title:'Bono por nuevo récord',description:'5% adicional en una compra futura, máximo $5.000 COP.',days:14});
       for(const reward of definitions){const inserted=await c.query(`INSERT INTO customer_rewards(customer_id,order_id,game_session_id,reward_key,scope,title,description,redemption_code,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,now()+$9*interval '1 day') RETURNING id,title,description,redemption_code AS "redemptionCode",expires_at AS "expiresAt",scope,status`,[attempt.customer_id,attempt.order_id,attempt.session_id,reward.key,reward.scope,reward.title,reward.description,rewardCode(),reward.days]);rewards.push(inserted.rows[0]);}
       await c.query(`UPDATE game_entitlements SET status='completed',completed_at=now() WHERE id=$1`,[attempt.entitlement_id]);
     }
-    return {score,totalScore:total,bestScore:best,recordBroken,complete,nextPlayer:complete?null:played+1,rewards};
+    return {score,totalScore:total,bestScore:best,recordBroken,complete,nextPlayer:complete?null:played+1,rewards,
+      verificationStatus:adjusted?'adjusted':'verified',
+      verificationMessage:adjusted
+        ? `Puntaje verificado por el servidor. La duración se ajustó de ${input.durationMs} ms a ${verified.durationMs} ms y el resultado se guardó.`
+        : 'Puntaje y duración verificados por el servidor sin ajustes.'};
   });res.json(result);
 });
 
