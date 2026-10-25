@@ -69,12 +69,15 @@ gameRouter.get('/game/eligibility',async(req,res)=>{
   const orderId=uuid.parse(req.query.orderId),trackingToken=tokenSchema.parse(req.query.trackingToken);
   const eligibility=await paidCapacity(pool as unknown as Pick<DB,'query'>,orderId,sha256(trackingToken));
   const sessions=await pool.query('SELECT COUNT(*)::int AS count,MAX(created_at) AS last_created_at FROM game_sessions WHERE order_id=$1',[orderId]);
+  const profileResult=await pool.query(`SELECT c.name,right(c.phone_e164,4) AS "phoneEnding",
+    COALESCE(stats.best_score,0)::int AS "bestScore",COALESCE(stats.games_played,0)::int AS "gamesPlayed"
+    FROM customers c LEFT JOIN customer_game_stats stats ON stats.customer_id=c.id WHERE c.id=$1`,[eligibility.customer_id]);
   const allowance=gameAllowance(Number(sessions.rows[0]?.count??0),sessions.rows[0]?.last_created_at??null);
   res.setHeader('Cache-Control','no-store');
   res.json({maxPlayers:eligibility.supportedPlayers,totalUnits:eligibility.totalUnits,counts:eligibility.counts,
     hasTable:Boolean(eligibility.table_code),unrestricted:eligibility.unrestricted,
     gamesUsed:eligibility.unrestricted?0:allowance.gamesUsed,gamesRemaining:eligibility.unrestricted?null:allowance.gamesRemaining,
-    nextAvailableAt:eligibility.unrestricted?null:allowance.nextAvailableAt});
+    nextAvailableAt:eligibility.unrestricted?null:allowance.nextAvailableAt,profile:profileResult.rows[0]});
 });
 
 gameRouter.post('/staff/table-visits/:id/close',needStaff('admin','cashier'),async(req,res)=>{
@@ -200,16 +203,17 @@ gameRouter.post('/game/attempts/:id/finish',async(req,res)=>{
     const aggregate=await c.query(`SELECT COALESCE(SUM(score),0)::int total,COALESCE(MAX(score),0)::int best,COUNT(*)::int played FROM game_attempts WHERE session_id=$1 AND status='completed'`,[attempt.session_id]);
     const {total,best,played}=aggregate.rows[0],complete=played>=attempt.player_count;
     await c.query(`UPDATE game_sessions SET total_score=$2,best_score=$3,current_player=LEAST(player_count,$4),status=CASE WHEN $5 THEN 'completed' ELSE status END,completed_at=CASE WHEN $5 THEN now() ELSE NULL END WHERE id=$1`,[attempt.session_id,total,best,played+1,complete]);
-    let rewards:any[]=[];let recordBroken=false;let rewardLimitMessage:string|null=null;
+    let rewards:any[]=[];let recordBroken=false;let rewardLimitMessage:string|null=null;let personalBestScore:number|null=null;
     if(complete){
       const previous=await c.query('SELECT best_score FROM customer_game_stats WHERE customer_id=$1 FOR UPDATE',[attempt.customer_id]),oldBest=previous.rows[0]?.best_score??0;
       recordBroken=attempt.mode==='individual'&&oldBest>=10&&score>oldBest;
+      personalBestScore=Math.max(Number(oldBest),Number(best));
       await c.query(`INSERT INTO customer_game_stats(customer_id,best_score,last_individual_play_at,games_played) VALUES($1,$2,CASE WHEN $3='individual' THEN now() ELSE NULL END,1) ON CONFLICT(customer_id) DO UPDATE SET best_score=GREATEST(customer_game_stats.best_score,EXCLUDED.best_score),last_individual_play_at=CASE WHEN $3='individual' THEN now() ELSE customer_game_stats.last_individual_play_at END,games_played=customer_game_stats.games_played+1,updated_at=now()`,[attempt.customer_id,best,attempt.mode]);
       const main=applyRecordBonus(earnedReward(attempt.mode,total,attempt.player_count),attempt.mode==='individual'&&earnsRecordBonus(oldBest,score));
       if(main){const issued=await issueReward(c,attempt.customer_id,attempt.order_id,attempt.session_id,main);if(issued.inserted)rewards.push(issued.inserted);rewardLimitMessage=issued.limitMessage;}
       await c.query(`UPDATE game_entitlements SET status='completed',completed_at=now() WHERE id=$1`,[attempt.entitlement_id]);
     }
-    const response={score,totalScore:total,bestScore:best,recordBroken,complete,nextPlayer:complete?null:played+1,rewards,rewardLimitMessage,
+    const response={score,totalScore:total,bestScore:best,personalBestScore,recordBroken,complete,nextPlayer:complete?null:played+1,rewards,rewardLimitMessage,
       verificationStatus:'confirmed' as const,verificationMessage:'El teléfono y el servidor coincidieron exactamente. Puntaje guardado con evidencia auditable.'};
     await c.query('UPDATE game_attempts SET result_snapshot=$2 WHERE id=$1',[attempt.id,JSON.stringify(response)]);
     return{kind:'confirmed' as const,result:response};
