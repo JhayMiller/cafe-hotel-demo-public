@@ -1,4 +1,4 @@
-export const ENGINE_VERSION=2;
+export const ENGINE_VERSION=3;
 export const TICK_MS=1000/60;
 
 function nextRandom(flight){
@@ -26,11 +26,12 @@ export function advanceFlight(flight,flap=false){
   for(const palm of flight.obstacles){
     palm.x-=138/60;
     if(!palm.passed&&palm.x+58<82){palm.passed=true;flight.score++;}
-    const inX=106>palm.x&&58<palm.x+58;
-    const safe=flight.y-18>palm.gapY-82&&flight.y+18<palm.gapY+82;
+    // La zona física cubre el tronco y la cabeza. Las alas y la cola son visuales.
+    const inX=108>palm.x&&68<palm.x+58;
+    const safe=flight.y-15>palm.gapY-82&&flight.y+15<palm.gapY+82;
     if(inX&&!safe){flight.finished=true;flight.finishReason='obstacle';return flight;}
   }
-  if(flight.y<12||flight.y>592){flight.finished=true;flight.finishReason='boundary';}
+  if(flight.y<15||flight.y>591){flight.finished=true;flight.finishReason='boundary';}
   return flight;
 }
 

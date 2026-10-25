@@ -19,6 +19,10 @@ assert.equal(first.terminalTick,client.tick,'teléfono y servidor deben terminar
 assert.equal(first.finishReason,client.finishReason,'teléfono y servidor deben registrar el mismo final');
 const displaced=replayFlight(123456,flapTicks.map(tick=>tick+1),client.tick);
 assert.notDeepEqual(displaced,first,'mover los impulsos un tick debe producir evidencia distinta y nunca ajustarse silenciosamente');
+const wingContact=createFlight(7);wingContact.nextSpawnTick=999;wingContact.obstacles=[{x:82,gapY:347.3,passed:false}];advanceFlight(wingContact);
+assert.equal(wingContact.finished,false,'las alas pueden tocar una palma cuando el tronco y la cabeza siguen dentro del espacio');
+const bodyContact=createFlight(7);bodyContact.nextSpawnTick=999;bodyContact.obstacles=[{x:82,gapY:357.3,passed:false}];advanceFlight(bodyContact);
+assert.equal(bodyContact.finishReason,'obstacle','el contacto del tronco o la cabeza sí debe terminar el vuelo');
 assert.equal(earnedReward('individual',9,1),null,'no debe premiar menos de 10 puntos');
 assert.equal(earnedReward('individual',10,1)?.discountPercent,2,'10 puntos individuales entregan 2%');
 assert.equal(earnedReward('individual',30,1)?.discountPercent,10,'30 puntos individuales se limitan a 10%');

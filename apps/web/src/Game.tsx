@@ -53,15 +53,18 @@ function drawPalm(ctx:CanvasRenderingContext2D,x:number,gapY:number,gap:number,w
   const trunk=(top:number,height:number,flip=false)=>{ctx.fillStyle='#d8c6a5';ctx.strokeStyle='#725244';ctx.lineWidth=4;ctx.beginPath();ctx.roundRect(x,top,w,height,10);ctx.fill();ctx.stroke();ctx.strokeStyle='#a88462';ctx.lineWidth=2;for(let y=top+16;y<top+height;y+=18){ctx.beginPath();ctx.moveTo(x+3,y);ctx.lineTo(x+w-3,y);ctx.stroke();}const crownY=flip?top+height:top;ctx.fillStyle='#4d7553';for(let i=0;i<7;i++){ctx.save();ctx.translate(x+w/2,crownY);ctx.rotate((i-3)*.3+(flip?Math.PI:0));ctx.beginPath();ctx.ellipse(0,-20,8,34,0,0,Math.PI*2);ctx.fill();ctx.restore();}};
   const topH=gapY-gap/2,bottomY=gapY+gap/2;trunk(0,Math.max(10,topH),true);trunk(bottomY,Math.max(10,h-34-bottomY));
 }
-const condorSprite=new Image();
-condorSprite.src='/condor-game.png';
-function drawCondor(ctx:CanvasRenderingContext2D,x:number,y:number,tilt:number){
-  ctx.save();ctx.translate(x,y);ctx.rotate(tilt);
-  if(condorSprite.complete&&condorSprite.naturalWidth){
-    ctx.drawImage(condorSprite,300,55,1010,880,-49,-43,101,88);
+const condorSprites=[new Image(),new Image()];
+condorSprites[0]!.src='/condor-game.png';
+condorSprites[1]!.src='/condor-game-down.png';
+function drawCondor(ctx:CanvasRenderingContext2D,x:number,y:number,wingFrame:0|1){
+  const sprite=condorSprites[wingFrame];
+  ctx.save();ctx.translate(x,y);
+  if(sprite?.complete&&sprite.naturalWidth){
+    if(wingFrame===0)ctx.drawImage(sprite,300,55,1010,880,-35,-50,78,68);
+    else ctx.drawImage(sprite,220,160,1180,810,-36,-29,78,68);
   }else{
-    ctx.fillStyle='#29262f';ctx.beginPath();ctx.ellipse(0,0,34,20,0,0,Math.PI*2);ctx.fill();
-    ctx.fillStyle='#f4ead8';ctx.beginPath();ctx.arc(20,-3,9,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#29262f';ctx.beginPath();ctx.ellipse(0,0,27,15,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#f4ead8';ctx.beginPath();ctx.arc(16,-2,7,0,Math.PI*2);ctx.fill();
   }
   ctx.restore();
 }
@@ -87,7 +90,7 @@ function CondorCanvas({attempt,practice,onFinish}:{attempt:FlightAttempt,practic
     const stop=()=>{if(finished)return;finished=true;finishRef.current(flight.tick,flapTicks,flight.score,flight.finishReason??'boundary');};
     canvas.addEventListener('pointerdown',flap);window.addEventListener('keydown',key);
     const step=()=>{const applyFlap=flapPending;flapPending=false;if(applyFlap)flapTicks.push(flight.tick+1);const previousScore=flight.score;advanceFlight(flight,applyFlap);if(flight.score!==previousScore){setShownScore(flight.score);if(flight.score%5===0){sceneFrom=sceneTo;sceneTo=(sceneTo+1)%scenes.length;sceneBlendTick=flight.tick;const nextName=scenes[sceneTo]!;sceneNameRef.current=nextName;setSceneName(nextName);}}if(flight.finished)stop();};
-    const loop=(now:number)=>{accumulator+=Math.min(50,now-last);last=now;while(accumulator>=TICK_MS&&!finished){step();accumulator-=TICK_MS;}drawScene(ctx,canvas.width,canvas.height,sceneFrom);if(sceneTo!==sceneFrom){const blend=Math.min(1,((flight.tick-sceneBlendTick)*TICK_MS)/1200);ctx.save();ctx.globalAlpha=blend;drawScene(ctx,canvas.width,canvas.height,sceneTo);ctx.restore();if(blend>=1)sceneFrom=sceneTo;}for(const palm of flight.obstacles)drawPalm(ctx,palm.x,palm.gapY,165,58,canvas.height);drawCondor(ctx,82,flight.y,Math.max(-.45,Math.min(.7,flight.vy/650)));ctx.fillStyle='#fff';ctx.font='700 34px system-ui';ctx.textAlign='center';ctx.shadowColor='#0008';ctx.shadowBlur=6;ctx.fillText(String(flight.score),canvas.width/2,55);ctx.font='700 13px system-ui';ctx.fillText(sceneNameRef.current,canvas.width/2,82);ctx.shadowBlur=0;if(!finished)frame=requestAnimationFrame(loop);};
+    const loop=(now:number)=>{accumulator+=Math.min(50,now-last);last=now;while(accumulator>=TICK_MS&&!finished){step();accumulator-=TICK_MS;}drawScene(ctx,canvas.width,canvas.height,sceneFrom);if(sceneTo!==sceneFrom){const blend=Math.min(1,((flight.tick-sceneBlendTick)*TICK_MS)/1200);ctx.save();ctx.globalAlpha=blend;drawScene(ctx,canvas.width,canvas.height,sceneTo);ctx.restore();if(blend>=1)sceneFrom=sceneTo;}for(const palm of flight.obstacles)drawPalm(ctx,palm.x,palm.gapY,165,58,canvas.height);drawCondor(ctx,82,flight.y,(Math.floor(flight.tick/7)%2) as 0|1);ctx.fillStyle='#fff';ctx.font='700 34px system-ui';ctx.textAlign='center';ctx.shadowColor='#0008';ctx.shadowBlur=6;ctx.fillText(String(flight.score),canvas.width/2,55);ctx.font='700 13px system-ui';ctx.fillText(sceneNameRef.current,canvas.width/2,82);ctx.shadowBlur=0;if(!finished)frame=requestAnimationFrame(loop);};
     frame=requestAnimationFrame(loop);return()=>{cancelAnimationFrame(frame);canvas.removeEventListener('pointerdown',flap);window.removeEventListener('keydown',key);};
   },[attempt.id,attempt.seed,started]);
   return <div className={`game-stage${practice?' practice-stage':''}`} ref={stageRef}><canvas ref={canvasRef} width={360} height={640} aria-label={practice?'Práctica del Cóndor del Quindío':'Juego Cóndor del Quindío'}/>{!started&&<div className="game-countdown"><small>{practice?'PRÁCTICA':'INTENTO OFICIAL'}</small><strong>{countdown}</strong></div>}<div className="game-hint">{practice?'Práctica':'Toca para volar'} · {shownScore} puntos · {sceneName}</div></div>;
