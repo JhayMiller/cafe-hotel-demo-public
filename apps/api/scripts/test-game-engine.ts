@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {replayFlight} from '../src/lib/game-engine.js';
 import {earnedReward,earnsRecordBonus} from '../src/lib/game-rewards.js';
 import {gameAllowance} from '../src/lib/game-access.js';
+import {createRewardPin,hashRewardPin,maskPhone,validRewardPin} from '../src/lib/reward-verification.js';
 
 const first=replayFlight(123456,[],3000),second=replayFlight(123456,[],3000);
 assert.deepEqual(first,second,'la reconstrucción debe ser determinista');
@@ -16,4 +17,11 @@ assert.equal(gameAllowance(2,new Date('2026-10-25T11:00:00.000Z'),now).gamesRema
 assert.equal(gameAllowance(3,new Date('2026-10-25T11:00:00.000Z'),now).canStart,false,'la cuarta partida debe esperar seis horas');
 assert.equal(gameAllowance(3,new Date('2026-10-25T05:59:59.000Z'),now).gamesRemaining,3,'el ciclo debe reabrirse después de seis horas');
 assert.equal(gameAllowance(4,new Date('2026-10-25T11:00:00.000Z'),now).gamesRemaining,2,'el ciclo nuevo debe volver a contar desde uno');
+process.env.PIN_PEPPER='p'.repeat(32);
+const rewardPin=createRewardPin(),challengeId='00000000-0000-4000-8000-000000000001',rewardId='00000000-0000-4000-8000-000000000002';
+assert.match(rewardPin,/^\d{6}$/,'el PIN debe tener seis dígitos');
+const rewardHash=hashRewardPin(challengeId,rewardId,rewardPin);
+assert.equal(validRewardPin(challengeId,rewardId,rewardPin,rewardHash),true,'el PIN correcto debe verificarse');
+assert.equal(validRewardPin(challengeId,rewardId,'999999',rewardHash),rewardPin==='999999','un PIN distinto debe rechazarse');
+assert.equal(maskPhone('+573205263602'),'+57 ••• ••• 02','el teléfono debe mostrarse enmascarado');
 console.log('Motor y umbrales del juego verificados.');

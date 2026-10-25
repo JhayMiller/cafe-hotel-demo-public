@@ -58,3 +58,20 @@ export function startNotificationWorker() {
   },20000);
   interval.unref();
 }
+
+export async function sendRewardPin(phone:string,pin:string){
+  const phoneId=process.env.WHATSAPP_PHONE_NUMBER_ID,token=process.env.WHATSAPP_ACCESS_TOKEN;
+  const template=process.env.WHATSAPP_TEMPLATE_REWARD_PIN;
+  if(!phoneId||!token||!template)throw Error('Canal de verificación por WhatsApp no configurado');
+  const graphVersion=process.env.WHATSAPP_GRAPH_VERSION||'v23.0';
+  if(!/^v\d+\.\d+$/.test(graphVersion))throw Error('Versión de Graph no válida');
+  const response=await fetch(`https://graph.facebook.com/${graphVersion}/${phoneId}/messages`,{
+    method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp',to:phone.replace('+',''),type:'template',
+      template:{name:template,language:{code:'es_CO'},components:[{type:'body',parameters:[{type:'text',text:pin}]}]}}),
+    signal:AbortSignal.timeout(15000)
+  });
+  if(!response.ok)throw Error(`Proveedor WhatsApp HTTP ${response.status}`);
+  const body=await response.json() as {messages?:{id?:string}[]};
+  return body.messages?.[0]?.id??null;
+}

@@ -1,5 +1,5 @@
 import {Router} from 'express';
-import {createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
+import {createHmac,randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {z} from 'zod';
 import {pool,inTransaction,HttpError,type DB} from '../lib/db.js';
 import {needStaff} from '../lib/auth.js';
@@ -8,6 +8,8 @@ import {assessParty,consumptionFromRows} from '../lib/game-capacity.js';
 import {replayFlight} from '../lib/game-engine.js';
 import {earnedReward,earnsRecordBonus,type RewardDefinition} from '../lib/game-rewards.js';
 import {gameAllowance} from '../lib/game-access.js';
+import {sendRewardPin} from '../lib/notifications.js';
+import {createRewardPin,hashRewardPin,maskPhone,REWARD_PIN_MAX_ATTEMPTS,REWARD_PIN_TTL_MINUTES,validRewardPin} from '../lib/reward-verification.js';
 
 export const gameRouter=Router();
 const uuid=z.uuid(),tokenSchema=z.string().regex(/^[a-f0-9]{64}$/),deviceSchema=z.string().min(24).max(100);
@@ -172,5 +174,68 @@ gameRouter.post('/game/attempts/:id/finish',async(req,res)=>{
 });
 
 gameRouter.get('/game/rewards',async(req,res)=>{const orderId=uuid.parse(req.query.orderId),trackingToken=tokenSchema.parse(req.query.trackingToken);const order=await pool.query('SELECT customer_id FROM orders WHERE id=$1 AND tracking_hash=$2',[orderId,sha256(trackingToken)]);if(!order.rowCount)throw new HttpError(404,'Pedido no encontrado');const rewards=await pool.query(`SELECT id,title,description,scope,redemption_code AS "redemptionCode",status,expires_at AS "expiresAt" FROM customer_rewards WHERE customer_id=$1 AND status='available' AND expires_at>now() ORDER BY created_at DESC`,[order.rows[0].customer_id]);res.json(rewards.rows);});
-gameRouter.get('/admin/rewards',needStaff('admin','cashier'),async(_req,res)=>{const rows=await pool.query(`SELECT r.id,r.title,r.scope,r.redemption_code AS "redemptionCode",r.status,r.expires_at AS "expiresAt",c.name,c.phone_e164 AS phone FROM customer_rewards r JOIN customers c ON c.id=r.customer_id WHERE r.status='available' AND r.expires_at>now() ORDER BY r.created_at DESC LIMIT 200`);res.json(rows.rows);});
-gameRouter.post('/admin/rewards/:id/redeem',needStaff('admin','cashier'),async(req,res)=>{const id=uuid.parse(req.params.id);const row=await pool.query(`UPDATE customer_rewards SET status='redeemed',redeemed_at=now(),redeemed_by=$2 WHERE id=$1 AND status='available' AND expires_at>now() RETURNING id`,[id,req.identity!.id]);if(!row.rowCount)throw new HttpError(409,'Premio inválido, vencido o ya usado');res.json({redeemed:true});});
+gameRouter.get('/admin/rewards',needStaff('admin','cashier'),async(_req,res)=>{const rows=await pool.query(`SELECT r.id,r.title,r.scope,r.redemption_code AS "redemptionCode",r.status,r.expires_at AS "expiresAt",
+  r.redeemed_at AS "redeemedAt",c.name,c.phone_e164 AS phone,challenge.id AS "receiptId",staff.display_name AS "redeemedByName"
+  FROM customer_rewards r JOIN customers c ON c.id=r.customer_id
+  LEFT JOIN LATERAL (SELECT id,verified_by FROM reward_redemption_challenges WHERE reward_id=r.id AND status='verified' ORDER BY verified_at DESC LIMIT 1) challenge ON true
+  LEFT JOIN staff_users staff ON staff.id=challenge.verified_by
+  WHERE (r.status='available' AND r.expires_at>now()) OR (r.status='redeemed' AND r.redeemed_at>now()-interval '30 days')
+  ORDER BY CASE WHEN r.status='available' THEN 0 ELSE 1 END,r.created_at DESC LIMIT 200`);res.json(rows.rows);});
+
+gameRouter.post('/admin/rewards/:id/redemption-pin',needStaff('admin','cashier'),async(req,res)=>{
+  const rewardId=uuid.parse(req.params.id),challengeId=randomUUID(),pin=createRewardPin();
+  z.object({customerPresent:z.literal(true)}).parse(req.body);
+  const challenge=await inTransaction(async c=>{
+    const found=await c.query(`SELECT r.id,r.status,r.expires_at,c.phone_e164
+      FROM customer_rewards r JOIN customers c ON c.id=r.customer_id WHERE r.id=$1 FOR UPDATE OF r`,[rewardId]);
+    const reward=found.rows[0];
+    if(!reward||reward.status!=='available'||new Date(reward.expires_at)<=new Date())throw new HttpError(409,'El premio está vencido, usado o no está disponible');
+    if(!reward.phone_e164)throw new HttpError(409,'La cuenta del cliente no tiene un teléfono válido');
+    await c.query(`UPDATE reward_redemption_challenges SET status='expired' WHERE reward_id=$1 AND status='pending' AND expires_at<=now()`,[rewardId]);
+    const active=await c.query(`SELECT expires_at FROM reward_redemption_challenges WHERE reward_id=$1 AND status='pending' LIMIT 1`,[rewardId]);
+    if(active.rowCount)throw new HttpError(409,'Ya existe un PIN vigente para este premio. Pídeselo al cliente o espera a que venza.');
+    const recent=await c.query(`SELECT COUNT(*)::int AS count FROM reward_redemption_challenges WHERE reward_id=$1 AND created_at>now()-interval '30 minutes'`,[rewardId]);
+    if(Number(recent.rows[0]?.count??0)>=3)throw new HttpError(429,'Se alcanzó el límite de envíos. Intenta nuevamente en 30 minutos.');
+    const made=await c.query(`INSERT INTO reward_redemption_challenges(id,reward_id,requested_by,customer_present_confirmed,code_hash,expires_at)
+      VALUES($1,$2,$3,true,$4,now()+$5*interval '1 minute') RETURNING expires_at AS "expiresAt"`,
+      [challengeId,rewardId,req.identity!.id,hashRewardPin(challengeId,rewardId,pin),REWARD_PIN_TTL_MINUTES]);
+    return{phone:reward.phone_e164 as string,expiresAt:made.rows[0].expiresAt as string};
+  });
+  try{
+    const providerMessageId=await sendRewardPin(challenge.phone,pin);
+    await pool.query('UPDATE reward_redemption_challenges SET provider_message_id=$2 WHERE id=$1',[challengeId,providerMessageId]);
+  }catch{
+    await pool.query(`UPDATE reward_redemption_challenges SET status='failed' WHERE id=$1`,[challengeId]);
+    throw new HttpError(503,'No se pudo enviar el PIN por WhatsApp. El premio continúa disponible y no fue marcado como usado.');
+  }
+  res.status(201).json({challengeId,maskedPhone:maskPhone(challenge.phone),expiresAt:challenge.expiresAt});
+});
+
+gameRouter.post('/admin/rewards/:id/redeem',needStaff('admin','cashier'),async(req,res)=>{
+  const rewardId=uuid.parse(req.params.id),{pin}=z.object({pin:z.string().regex(/^\d{6}$/)}).parse(req.body);
+  const result=await inTransaction(async c=>{
+    const rewardResult=await c.query(`SELECT id,status,expires_at FROM customer_rewards WHERE id=$1 FOR UPDATE`,[rewardId]);
+    const reward=rewardResult.rows[0];
+    if(!reward||reward.status!=='available'||new Date(reward.expires_at)<=new Date())throw new HttpError(409,'El premio está vencido, usado o no está disponible');
+    const challengeResult=await c.query(`SELECT id,code_hash,attempts,expires_at FROM reward_redemption_challenges
+      WHERE reward_id=$1 AND status='pending' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,[rewardId]);
+    const challenge=challengeResult.rows[0];
+    if(!challenge)throw new HttpError(409,'Solicita primero el PIN de confirmación por WhatsApp');
+    if(new Date(challenge.expires_at)<=new Date()){
+      await c.query(`UPDATE reward_redemption_challenges SET status='expired' WHERE id=$1`,[challenge.id]);
+      return{kind:'expired' as const};
+    }
+    if(!validRewardPin(challenge.id,rewardId,pin,challenge.code_hash)){
+      const attempts=Number(challenge.attempts)+1,expired=attempts>=REWARD_PIN_MAX_ATTEMPTS;
+      await c.query(`UPDATE reward_redemption_challenges SET attempts=$2,status=CASE WHEN $3 THEN 'expired' ELSE status END WHERE id=$1`,[challenge.id,attempts,expired]);
+      return{kind:'invalid' as const,remaining:Math.max(0,REWARD_PIN_MAX_ATTEMPTS-attempts)};
+    }
+    const redeemed=await c.query(`UPDATE customer_rewards SET status='redeemed',redeemed_at=now(),redeemed_by=$2
+      WHERE id=$1 RETURNING redeemed_at AS "redeemedAt"`,[rewardId,req.identity!.id]);
+    await c.query(`UPDATE reward_redemption_challenges SET status='verified',verified_by=$2,verified_at=now() WHERE id=$1`,[challenge.id,req.identity!.id]);
+    return{kind:'verified' as const,receiptId:challenge.id,redeemedAt:redeemed.rows[0].redeemedAt};
+  });
+  if(result.kind==='expired')throw new HttpError(410,'El PIN venció. Solicita uno nuevo; el premio continúa disponible.');
+  if(result.kind==='invalid')throw new HttpError(422,`PIN incorrecto. Quedan ${result.remaining} intentos.`);
+  res.json({redeemed:true,receiptId:result.receiptId,redeemedAt:result.redeemedAt});
+});

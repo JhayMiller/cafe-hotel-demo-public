@@ -74,6 +74,7 @@ settingsRouter.put('/admin/staff/:id/password',needStaff('admin'),async(req,res)
 
 settingsRouter.get('/admin/integrations',needStaff('admin'),(_req,res)=>res.json({
   payments:{provider:'Wompi',environment:process.env.WOMPI_ENV||'disabled',configured:Boolean(process.env.WOMPI_PUBLIC_KEY&&process.env.WOMPI_INTEGRITY_SECRET&&process.env.WOMPI_EVENTS_SECRET)},
-  whatsapp:{configured:Boolean(process.env.WHATSAPP_ACCESS_TOKEN&&process.env.WHATSAPP_PHONE_NUMBER_ID)},
+  whatsapp:{configured:Boolean(process.env.WHATSAPP_ACCESS_TOKEN&&process.env.WHATSAPP_PHONE_NUMBER_ID),
+    rewardPinReady:Boolean(process.env.WHATSAPP_ACCESS_TOKEN&&process.env.WHATSAPP_PHONE_NUMBER_ID&&process.env.WHATSAPP_TEMPLATE_REWARD_PIN)},
   storage:{configured:Boolean(process.env.STORAGE_BUCKET&&process.env.STORAGE_PUBLIC_BASE_URL)}
 }));
