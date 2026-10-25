@@ -17,17 +17,24 @@ const normalizeTable=(value:string)=>value.trim().toUpperCase().replace(/\s+/g,'
 const MAX_PLAYERS=20;
 
 async function paidCapacity(c:Pick<DB,'query'>,orderId:string,trackingHash:string){
-  const found=await c.query(`SELECT o.customer_id,o.table_code,i.game_group_snapshot,
-    SUM(i.quantity*i.game_units_snapshot)::int AS units
+  const access=await c.query(`SELECT o.customer_id,o.table_code,cst.payment_bypass
     FROM orders o JOIN customers cst ON cst.id=o.customer_id
-    JOIN suborders s ON s.order_id=o.id AND s.area='cafe' AND (s.payment_status='paid' OR (s.payment_status='not_required' AND cst.payment_bypass=true))
+    JOIN suborders s ON s.order_id=o.id AND s.area='cafe'
+    WHERE o.id=$1 AND o.tracking_hash=$2 AND (s.payment_status='paid' OR cst.payment_bypass=true)
+    LIMIT 1`,[orderId,trackingHash]);
+  if(!access.rowCount)throw new HttpError(403,'El pedido debe estar pagado antes de jugar');
+  const found=await c.query(`SELECT i.game_group_snapshot,
+    SUM(i.quantity*i.game_units_snapshot)::int AS units
+    FROM orders o JOIN suborders s ON s.order_id=o.id AND s.area='cafe'
     JOIN order_items i ON i.suborder_id=s.id
     WHERE o.id=$1 AND o.tracking_hash=$2 AND o.customer_id IS NOT NULL AND i.game_group_snapshot<>'none'
-    GROUP BY o.id,o.customer_id,o.table_code,i.game_group_snapshot`,[orderId,trackingHash]);
-  if(!found.rowCount)throw new HttpError(403,'El pedido debe estar pagado antes de jugar');
-  const row=found.rows[0],counts=consumptionFromRows(found.rows),assessment=assessParty(counts,1,MAX_PLAYERS);
+    GROUP BY i.game_group_snapshot`,[orderId,trackingHash]);
+  const row=access.rows[0],counts=consumptionFromRows(found.rows),unrestricted=Boolean(row.payment_bypass);
+  const assessment=unrestricted
+    ? {allowed:true,confidence:'unrestricted' as const,totalUnits:Object.values(counts).reduce((sum,value)=>sum+value,0),supportedPlayers:MAX_PLAYERS,reason:'Perfil de pruebas sin límites de partidas.'}
+    : assessParty(counts,1,MAX_PLAYERS);
   if(assessment.supportedPlayers<1)throw new HttpError(409,assessment.reason);
-  return {customer_id:row.customer_id,table_code:row.table_code,counts,...assessment};
+  return {customer_id:row.customer_id,table_code:row.table_code,counts,unrestricted,...assessment};
 }
 
 gameRouter.get('/game/eligibility',async(req,res)=>{
@@ -35,7 +42,7 @@ gameRouter.get('/game/eligibility',async(req,res)=>{
   const eligibility=await paidCapacity(pool as unknown as Pick<DB,'query'>,orderId,sha256(trackingToken));
   res.setHeader('Cache-Control','no-store');
   res.json({maxPlayers:eligibility.supportedPlayers,totalUnits:eligibility.totalUnits,counts:eligibility.counts,
-    hasTable:Boolean(eligibility.table_code)});
+    hasTable:Boolean(eligibility.table_code),unrestricted:eligibility.unrestricted});
 });
 
 gameRouter.post('/staff/table-visits/:id/close',needStaff('admin','cashier'),async(req,res)=>{
@@ -49,13 +56,17 @@ gameRouter.post('/game/sessions',async(req,res)=>{
   const session=await inTransaction(async c=>{
     await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`game:${input.orderId}`]);
     const eligible=await paidCapacity(c,input.orderId,sha256(input.trackingToken));
-    const assessment=assessParty(eligible.counts,input.playerCount,MAX_PLAYERS);
+    const assessment=eligible.unrestricted
+      ? {allowed:true,confidence:'unrestricted' as const,reason:'Perfil de pruebas sin límites de partidas.'}
+      : assessParty(eligible.counts,input.playerCount,MAX_PLAYERS);
     if(!assessment.allowed)throw new HttpError(422,assessment.reason);
-    const mode=input.playerCount===1?'individual':'friends',key=eligible.table_code?normalizeTable(eligible.table_code):null;
-    if(mode==='friends'&&!key)throw new HttpError(422,'El modo Amigos requiere un pedido asociado a una mesa');
-    const used=await c.query(`SELECT id,nonce,mode,player_count AS "playerCount",current_player AS "currentPlayer",status,expires_at AS "expiresAt",device_hash FROM game_sessions WHERE order_id=$1`,[input.orderId]);
-    if(used.rowCount){const previous=used.rows[0];if(previous.status==='active'&&previous.device_hash===fingerprint&&new Date(previous.expiresAt)>new Date())return previous;throw new HttpError(409,'Este pedido ya habilitó una sesión de juego');}
-    if(mode==='individual'){
+    const mode=input.playerCount===1?'individual':'friends',key=eligible.unrestricted?null:eligible.table_code?normalizeTable(eligible.table_code):null;
+    if(mode==='friends'&&!key&&!eligible.unrestricted)throw new HttpError(422,'El modo Amigos requiere un pedido asociado a una mesa');
+    if(!eligible.unrestricted){
+      const used=await c.query(`SELECT id,nonce,mode,player_count AS "playerCount",current_player AS "currentPlayer",status,expires_at AS "expiresAt",device_hash FROM game_sessions WHERE order_id=$1`,[input.orderId]);
+      if(used.rowCount){const previous=used.rows[0];if(previous.status==='active'&&previous.device_hash===fingerprint&&new Date(previous.expiresAt)>new Date())return previous;throw new HttpError(409,'Este pedido ya habilitó una sesión de juego');}
+    }
+    if(mode==='individual'&&!eligible.unrestricted){
       const recent=await c.query(`SELECT 1 FROM game_sessions WHERE mode='individual' AND (customer_id=$1 OR device_hash=$2) AND created_at>now()-interval '24 hours' LIMIT 1`,[eligible.customer_id,fingerprint]);
       if(recent.rowCount)throw new HttpError(429,'El próximo intento individual estará disponible 24 horas después del anterior');
     }
@@ -73,8 +84,9 @@ gameRouter.post('/game/sessions',async(req,res)=>{
         visitId=made.rows[0].id;
       }
     }
-    const existingEntitlement=await c.query(`SELECT id,mode,player_count,status,expires_at FROM game_entitlements WHERE order_id=$1 FOR UPDATE`,[input.orderId]);
     let entitlementId:string;
+    const existingEntitlement=eligible.unrestricted?{rowCount:0,rows:[]}:
+      await c.query(`SELECT id,mode,player_count,status,expires_at FROM game_entitlements WHERE order_id=$1 FOR UPDATE`,[input.orderId]);
     if(existingEntitlement.rowCount){
       const existing=existingEntitlement.rows[0];
       if(existing.status!=='issued'||new Date(existing.expires_at)<=new Date()||existing.mode!==mode||existing.player_count!==input.playerCount)
@@ -87,10 +99,12 @@ gameRouter.post('/game/sessions',async(req,res)=>{
     }
     const made=await c.query(`INSERT INTO game_sessions(order_id,customer_id,device_hash,mode,player_count,entitlement_id,table_key) VALUES($1,$2,$3,$4,$5,$6,$7)
       RETURNING id,nonce,mode,player_count AS "playerCount",current_player AS "currentPlayer",expires_at AS "expiresAt"`,[input.orderId,eligible.customer_id,fingerprint,mode,input.playerCount,entitlementId,key]);
-    await c.query(`UPDATE game_entitlements SET status='claimed',claimed_at=now() WHERE id=$1`,[entitlementId]);return made.rows[0];
+    await c.query(`UPDATE game_entitlements SET status='claimed',claimed_at=now() WHERE id=$1`,[entitlementId]);return {...made.rows[0],unrestricted:eligible.unrestricted};
   });
   const eligibility=await paidCapacity(pool as unknown as Pick<DB,'query'>,input.orderId,sha256(input.trackingToken));
-  const assessment=assessParty(eligibility.counts,input.playerCount,MAX_PLAYERS);
+  const assessment=eligibility.unrestricted
+    ? {confidence:'unrestricted' as const,reason:'Perfil de pruebas sin límites de partidas.'}
+    : assessParty(eligibility.counts,input.playerCount,MAX_PLAYERS);
   res.status(201).json({...session,confidence:assessment.confidence,validationMessage:assessment.reason,sessionToken:sign('game-session',session.id,session.nonce)});
 });
 

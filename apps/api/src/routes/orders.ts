@@ -137,7 +137,8 @@ ordersRouter.post('/orders/checkout',async(req,res)=>{
 ordersRouter.get('/orders/:id/status',async(req,res)=>{
   const orderId=z.uuid().parse(req.params.id);
   const token=z.string().length(64).parse(req.query.token);
-  const result=await pool.query('SELECT id FROM orders WHERE id=$1 AND tracking_hash=$2',[orderId,sha256(token)]);
+  const result=await pool.query(`SELECT o.id,COALESCE(c.payment_bypass,false) AS payment_bypass
+    FROM orders o LEFT JOIN customers c ON c.id=o.customer_id WHERE o.id=$1 AND o.tracking_hash=$2`,[orderId,sha256(token)]);
   if (!result.rowCount) throw new HttpError(404,'Pedido no encontrado');
   const sub=await pool.query('SELECT area,status,payment_status AS "paymentStatus" FROM suborders WHERE order_id=$1',[orderId]);
   const game=await pool.query(`SELECT mode,player_count AS "playerCount",status,expires_at AS "expiresAt" FROM game_entitlements WHERE order_id=$1`,[orderId]);
@@ -149,6 +150,8 @@ ordersRouter.get('/orders/:id/status',async(req,res)=>{
     GROUP BY i.game_group_snapshot`,[orderId]);
   const counts=consumptionFromRows(capacity.rows),assessment=assessParty(counts,1);
   res.setHeader('Cache-Control','no-store');
+  const unrestricted=Boolean(result.rows[0].payment_bypass);
   res.json({orderId,suborders:sub.rows,gameEntitlement:game.rows[0]??null,
-    gameEligibility:assessment.supportedPlayers>0?{counts,totalUnits:assessment.totalUnits,maxPlayers:assessment.supportedPlayers}:null});
+    gameEligibility:unrestricted?{counts,totalUnits:assessment.totalUnits,maxPlayers:20,unrestricted:true}:
+      assessment.supportedPlayers>0?{counts,totalUnits:assessment.totalUnits,maxPlayers:assessment.supportedPlayers,unrestricted:false}:null});
 });
