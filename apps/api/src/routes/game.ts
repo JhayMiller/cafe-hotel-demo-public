@@ -19,7 +19,8 @@ const MAX_PLAYERS=20;
 async function paidCapacity(c:Pick<DB,'query'>,orderId:string,trackingHash:string){
   const found=await c.query(`SELECT o.customer_id,o.table_code,i.game_group_snapshot,
     SUM(i.quantity*i.game_units_snapshot)::int AS units
-    FROM orders o JOIN suborders s ON s.order_id=o.id AND s.area='cafe' AND s.payment_status='paid'
+    FROM orders o JOIN customers cst ON cst.id=o.customer_id
+    JOIN suborders s ON s.order_id=o.id AND s.area='cafe' AND (s.payment_status='paid' OR (s.payment_status='not_required' AND cst.payment_bypass=true))
     JOIN order_items i ON i.suborder_id=s.id
     WHERE o.id=$1 AND o.tracking_hash=$2 AND o.customer_id IS NOT NULL AND i.game_group_snapshot<>'none'
     GROUP BY o.id,o.customer_id,o.table_code,i.game_group_snapshot`,[orderId,trackingHash]);

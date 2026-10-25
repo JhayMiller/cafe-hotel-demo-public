@@ -3,7 +3,7 @@ import {fileURLToPath} from 'node:url';
 import argon2 from 'argon2';
 import {pool,type DB} from './lib/db.js';
 
-const migrations=['001_init.sql','002_pilot_seed.sql','003_brand_and_staff.sql','004_guest_services.sql','005_game_rewards.sql','006_game_fraud_controls.sql','007_automatic_game_capacity.sql','008_consumption_evidence.sql'];
+const migrations=['001_init.sql','002_pilot_seed.sql','003_brand_and_staff.sql','004_guest_services.sql','005_game_rewards.sql','006_game_fraud_controls.sql','007_automatic_game_capacity.sql','008_consumption_evidence.sql','009_preferred_customer.sql'];
 
 async function ensureInitialAdmin(client: DB) {
   const email=process.env.INITIAL_ADMIN_EMAIL?.trim().toLowerCase();
@@ -20,6 +20,21 @@ async function ensureInitialAdmin(client: DB) {
   await client.query(`INSERT INTO staff_users(email,password_hash,display_name,role)
     VALUES($1,$2,$3,'admin')`,[email,hash,displayName]);
   console.log('Administrador inicial creado. Retira INITIAL_ADMIN_PASSWORD de las variables del servidor.');
+}
+
+async function ensurePreferredCustomer(client: DB) {
+  const configuredPhone=process.env.PREFERRED_CUSTOMER_PHONE?.trim();
+  if (!configuredPhone) return;
+  const phone=/^3\d{9}$/.test(configuredPhone)?`+57${configuredPhone}`:configuredPhone;
+  if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
+    console.warn('Cliente preferencial omitido: PREFERRED_CUSTOMER_PHONE no tiene formato válido.');
+    return;
+  }
+  const name=process.env.PREFERRED_CUSTOMER_NAME?.trim()||'Cliente preferencial';
+  await client.query(`INSERT INTO customers(name,phone_e164,whatsapp_opt_in,payment_bypass)
+    VALUES($1,$2,false,true) ON CONFLICT(phone_e164) DO UPDATE
+    SET name=$1,payment_bypass=true,updated_at=now()`,[name,phone]);
+  console.log('Cuenta de cliente preferencial sincronizada.');
 }
 
 export async function runMigrations() {
@@ -39,6 +54,7 @@ export async function runMigrations() {
       console.log(`Migración aplicada: ${name}`);
     }
     await ensureInitialAdmin(client);
+    await ensurePreferredCustomer(client);
   } finally {
     await client.query('SELECT pg_advisory_unlock($1)',[8142026]).catch(()=>undefined);
     client.release();

@@ -55,7 +55,7 @@ operationsRouter.patch('/staff/suborders/:id/status',needStaff('admin','receptio
 });
 operationsRouter.get('/admin/customers',needStaff('admin'),async(_req,res)=>{
   const result=await pool.query(`SELECT c.id,c.name,c.phone_e164 AS phone,
-    c.whatsapp_opt_in AS "whatsappOptIn",COUNT(s.id)::int AS visits,
+    c.whatsapp_opt_in AS "whatsappOptIn",c.payment_bypass AS "paymentBypass",COUNT(s.id)::int AS visits,
     COALESCE(ROUND(AVG(s.total_cop)),0)::bigint AS "averageTicketCop",
     COALESCE(SUM(s.total_cop),0)::bigint AS "spendCop"
     FROM customers c LEFT JOIN orders o ON o.customer_id=c.id

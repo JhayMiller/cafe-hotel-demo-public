@@ -11,5 +11,9 @@ services:
         generateValue: true
       - key: PIN_PEPPER
         generateValue: true
+      - key: PREFERRED_CUSTOMER_PHONE
+        sync: false
+      - key: PREFERRED_CUSTOMER_NAME
+        sync: false
       - key: NODE_ENV
         value: production

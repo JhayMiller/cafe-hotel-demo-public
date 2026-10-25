@@ -20,7 +20,8 @@ export const cartInput = z.object({
   idempotencyKey:z.uuid(),
   tableCode:z.string().max(60).optional(),
   customer:z.object({name:z.string().min(2).max(120),
-    phone:z.string().regex(/^\+[1-9]\d{7,14}$/),whatsappOptIn:z.boolean().default(false)}).optional(),
+    phone:z.string().trim().transform(value=>/^3\d{9}$/.test(value)?`+57${value}`:value)
+      .pipe(z.string().regex(/^\+[1-9]\d{7,14}$/)),whatsappOptIn:z.boolean().default(false)}).optional(),
   cafePayment:z.enum(['cash','online']).default('cash'),
   hotelPayment:z.enum(['none','room_charge']).default('none'),
   items:z.array(z.object({productId:z.uuid(),quantity:z.number().int().min(1).max(30),

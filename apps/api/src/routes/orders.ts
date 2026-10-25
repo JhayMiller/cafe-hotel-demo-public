@@ -25,10 +25,11 @@ ordersRouter.post('/orders/checkout',async(req,res)=>{
   const response=await inTransaction(async c=>{
     // Bloqueo lógico de idempotencia para clics repetidos / doble envío.
     await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[cart.idempotencyKey]);
-    const exists=await c.query('SELECT id,request_hash FROM orders WHERE idempotency_key=$1',[cart.idempotencyKey]);
+    const exists=await c.query(`SELECT o.id,o.request_hash,COALESCE(c.payment_bypass,false) AS payment_bypass
+      FROM orders o LEFT JOIN customers c ON c.id=o.customer_id WHERE o.idempotency_key=$1`,[cart.idempotencyKey]);
     if (exists.rowCount) {
       if (exists.rows[0].request_hash!==requestHash) throw new HttpError(409,'Clave de idempotencia reutilizada con otro pedido');
-      return {orderId:exists.rows[0].id as string,reused:true,announcements:[] as any[]};
+      return {orderId:exists.rows[0].id as string,reused:true,announcements:[] as any[],customerBypass:Boolean(exists.rows[0].payment_bypass)};
     }
     const ids=[...new Set(cart.items.map(item=>item.productId))];
     const products=await c.query(`SELECT id,name,area,visibility,price_cop,is_available,deleted_at,game_group,game_units
@@ -75,18 +76,18 @@ ordersRouter.post('/orders/checkout',async(req,res)=>{
         gameGroup:area==='cafe'?p.game_group:'none',gameUnits:area==='cafe'?Number(p.game_units):0});
     }
     if (role==='standard'&&totalHotel) throw new HttpError(403,'El hotel requiere acceso de huésped');
-    if (totalCafe>0 && cart.cafePayment==='online' && (!process.env.WOMPI_PUBLIC_KEY || !process.env.WOMPI_INTEGRITY_SECRET || !process.env.WOMPI_EVENTS_SECRET))
-      throw new HttpError(503,'Pago en línea no configurado; selecciona efectivo en caja');
     if (totalHotel>0&&cart.hotelPayment!=='room_charge') throw new HttpError(422,'Este servicio requiere cargo a habitación');
     if (!Number.isSafeInteger(totalCafe+totalHotel)) throw new HttpError(422,'Importe inválido');
-    let customerId:string|null=null;
+    let customerId:string|null=null,customerBypass=false;
     if (cart.customer) {
       const cust=await c.query(`INSERT INTO customers(name,phone_e164,whatsapp_opt_in)
-        VALUES($1,$2,$3) ON CONFLICT(phone_e164) DO UPDATE SET name=EXCLUDED.name,
-        whatsapp_opt_in=EXCLUDED.whatsapp_opt_in,updated_at=now() RETURNING id`,
+        VALUES($1,$2,$3) ON CONFLICT(phone_e164) DO UPDATE SET name=CASE WHEN customers.payment_bypass THEN customers.name ELSE EXCLUDED.name END,
+        whatsapp_opt_in=EXCLUDED.whatsapp_opt_in,updated_at=now() RETURNING id,payment_bypass`,
         [cart.customer.name,cart.customer.phone,cart.customer.whatsappOptIn]);
-      customerId=cust.rows[0].id;
+      customerId=cust.rows[0].id;customerBypass=Boolean(cust.rows[0].payment_bypass);
     }
+    if (totalCafe>0 && !customerBypass && cart.cafePayment==='online' && (!process.env.WOMPI_PUBLIC_KEY || !process.env.WOMPI_INTEGRITY_SECRET || !process.env.WOMPI_EVENTS_SECRET))
+      throw new HttpError(503,'Pago en línea no configurado; selecciona efectivo en caja');
     const orderId=randomUUID();
     const token=trackingFor(orderId,cart.idempotencyKey);
     await c.query(`INSERT INTO orders(id,actor_role,customer_id,stay_id,table_code,idempotency_key,request_hash,tracking_hash)
@@ -97,9 +98,9 @@ ordersRouter.post('/orders/checkout',async(req,res)=>{
       const items=prepared.filter(x=>x.area===area);
       if (!items.length) continue;
       const total=area==='cafe'?totalCafe:totalHotel;
-      const method=area==='cafe'?cart.cafePayment:total===0?'none':'room_charge';
-      const status=area==='hotel'?'queued':method==='cash'?'pending_payment':'waiting_gateway';
-      const payStatus=area==='hotel'?(method==='none'?'not_required':'room_charge'):'pending';
+      const method=area==='cafe'?(customerBypass?'cash':cart.cafePayment):total===0?'none':'room_charge';
+      const status=area==='hotel'||customerBypass?'queued':method==='cash'?'pending_payment':'waiting_gateway';
+      const payStatus=area==='hotel'?(method==='none'?'not_required':'room_charge'):customerBypass?'not_required':'pending';
       const sub=await c.query(`INSERT INTO suborders(order_id,area,status,payment_method,payment_status,total_cop)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,[orderId,area,status,method,payStatus,total]);
       const sid=sub.rows[0].id as string;
@@ -111,7 +112,7 @@ ordersRouter.post('/orders/checkout',async(req,res)=>{
       if (area==='hotel' && method==='room_charge') {
         await c.query('INSERT INTO room_charges(stay_id,suborder_id,amount_cop) VALUES($1,$2,$3)',[anchor,sid,total]);
       }
-      if (area==='cafe' && method==='online') {
+      if (area==='cafe' && method==='online' && !customerBypass) {
         await c.query('INSERT INTO payment_attempts(suborder_id,reference,amount_cop) VALUES($1,$2,$3)',
           [sid,`CH-${sid}`,total]);
       }
@@ -121,7 +122,7 @@ ordersRouter.post('/orders/checkout',async(req,res)=>{
       }
       announcements.push({suborderId:sid,area,status});
     }
-    return {orderId,reused:false,announcements};
+    return {orderId,reused:false,announcements,customerBypass};
   });
   for (const event of response.announcements) announce(event.area,event.suborderId,event.status);
   const token=trackingFor(response.orderId,cart.idempotencyKey);
@@ -129,7 +130,7 @@ ordersRouter.post('/orders/checkout',async(req,res)=>{
     FROM suborders WHERE order_id=$1 ORDER BY area`,[response.orderId]);
   const online=suborders.rows.find(s=>s.area==='cafe'&&s.paymentMethod==='online');
   const checkout=online?checkoutDetails(`CH-${online.id}`,safeNumber(online.totalCop)):null;
-  res.status(response.reused?200:201).json({orderId:response.orderId,trackingToken:token,
+  res.status(response.reused?200:201).json({orderId:response.orderId,trackingToken:token,paymentBypassed:response.customerBypass??false,
     suborders:suborders.rows,onlineCheckout:checkout,
     instructions: online&&!checkout?'Pasarela todavía no configurada; no se iniciará la preparación':undefined});
 });
@@ -142,8 +143,9 @@ ordersRouter.get('/orders/:id/status',async(req,res)=>{
   const game=await pool.query(`SELECT mode,player_count AS "playerCount",status,expires_at AS "expiresAt" FROM game_entitlements WHERE order_id=$1`,[orderId]);
   const capacity=await pool.query(`SELECT i.game_group_snapshot,
     SUM(i.quantity*i.game_units_snapshot)::int AS units
-    FROM suborders s JOIN order_items i ON i.suborder_id=s.id
-    WHERE s.order_id=$1 AND s.area='cafe' AND s.payment_status='paid' AND i.game_group_snapshot<>'none'
+    FROM suborders s JOIN orders o ON o.id=s.order_id JOIN customers c ON c.id=o.customer_id
+    JOIN order_items i ON i.suborder_id=s.id
+    WHERE s.order_id=$1 AND s.area='cafe' AND (s.payment_status='paid' OR (s.payment_status='not_required' AND c.payment_bypass=true)) AND i.game_group_snapshot<>'none'
     GROUP BY i.game_group_snapshot`,[orderId]);
   const counts=consumptionFromRows(capacity.rows),assessment=assessParty(counts,1);
   res.setHeader('Cache-Control','no-store');
