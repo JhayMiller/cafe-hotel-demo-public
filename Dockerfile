@@ -19,6 +19,7 @@ FROM node:22-bookworm-slim
 ENV NODE_ENV=production WEB_DIST_DIR=/app/public
 WORKDIR /app
 COPY --from=api-builder --chown=node:node /api/node_modules ./node_modules
+COPY --from=api-builder --chown=node:node /game-core /game-core
 COPY --from=api-builder --chown=node:node /api/dist ./dist
 COPY --from=api-builder --chown=node:node /api/package.json ./package.json
 COPY --chown=node:node apps/api/sql ./sql
