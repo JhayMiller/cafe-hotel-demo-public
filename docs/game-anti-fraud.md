@@ -6,7 +6,7 @@ Una visita de mesa puede recibir una sola partida. Dividir la cuenta, crear vari
 
 El servidor evalúa si la cantidad declarada de jugadores es compatible con las porciones individuales del pedido pagado, con un tope técnico de 20. Cada producto guarda un tipo de consumo (`bebida`, `pastelería`, `plato`, `producto de paquete`, `otro` o `no cuenta`) y cuántas personas representa cada unidad. Estos valores se copian al pedido para que una edición posterior de la carta no cambie la evidencia.
 
-La regla esencial es que cada jugador declarado debe quedar respaldado por al menos una porción. La coincidencia es exacta cuando jugadores y porciones son iguales. Se considera alta cuando todas las personas quedan cubiertas y la combinación de categorías permite una distribución natural; por ejemplo, tres bebidas, cuatro productos de pastelería y un producto de paquete respaldan cinco jugadores. Si se declaran cinco jugadores con solo dos bebidas y dos productos de pastelería, se rechaza porque una persona quedaría sin consumo.
+La regla estima personas sin contar dos veces a quien pide bebida y alimento: `personas respaldadas = mayor entre bebidas y suma de pastelería + platos + productos de paquete + otros alimentos`. La coincidencia es exacta cuando bebidas y alimentos igualan la cantidad declarada. Se considera alta cuando el mayor bloque coincide; por ejemplo, tres bebidas, cuatro productos de pastelería y un producto de paquete respaldan cinco jugadores. Si se declaran cinco jugadores con solo dos bebidas y dos productos de pastelería, se rechaza porque el patrón respalda dos personas.
 
 En mostrador, donde no existe una mesa, solo se permite el modo Individual. Conserva el límite de 24 horas por cliente o dispositivo.
 
