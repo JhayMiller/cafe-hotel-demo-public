@@ -60,7 +60,9 @@ gameRouter.post('/game/sessions',async(req,res)=>{
       ? {allowed:true,confidence:'unrestricted' as const,reason:'Perfil de pruebas sin límites de partidas.'}
       : assessParty(eligible.counts,input.playerCount,MAX_PLAYERS);
     if(!assessment.allowed)throw new HttpError(422,assessment.reason);
-    const mode=input.playerCount===1?'individual':'friends',key=eligible.unrestricted?null:eligible.table_code?normalizeTable(eligible.table_code):null;
+    const mode=input.playerCount===1?'individual':'friends',key=eligible.unrestricted
+      ? eligible.table_code?normalizeTable(eligible.table_code):`TEST-${input.orderId}`
+      : eligible.table_code?normalizeTable(eligible.table_code):null;
     if(mode==='friends'&&!key&&!eligible.unrestricted)throw new HttpError(422,'El modo Amigos requiere un pedido asociado a una mesa');
     if(!eligible.unrestricted){
       const used=await c.query(`SELECT id,nonce,mode,player_count AS "playerCount",current_player AS "currentPlayer",status,expires_at AS "expiresAt",device_hash FROM game_sessions WHERE order_id=$1`,[input.orderId]);
@@ -72,7 +74,7 @@ gameRouter.post('/game/sessions',async(req,res)=>{
     }
     await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`game-table:${key??input.orderId}`]);
     let visitId:string|null=null;
-    if(key){
+    if(key&&!eligible.unrestricted){
       await c.query(`UPDATE table_visits SET status='closed',closed_at=now() WHERE table_key=$1 AND status='active' AND expires_at<=now()`,[key]);
       const active=await c.query(`SELECT id FROM table_visits WHERE table_key=$1 AND status='active' FOR UPDATE`,[key]);
       if(active.rowCount){
