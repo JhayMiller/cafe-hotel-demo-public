@@ -1,5 +1,6 @@
 FROM node:22-bookworm-slim AS web-builder
 WORKDIR /web
+COPY apps/game-core /game-core
 COPY apps/web/package*.json ./
 RUN npm ci --no-audit --no-fund
 COPY apps/web/ ./
@@ -7,6 +8,7 @@ RUN npm run build
 
 FROM node:22-bookworm-slim AS api-builder
 WORKDIR /api
+COPY apps/game-core /game-core
 COPY apps/api/package*.json ./
 RUN npm install --no-audit --no-fund
 COPY apps/api/tsconfig.json ./

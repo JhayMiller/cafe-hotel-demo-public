@@ -8,7 +8,7 @@ operationsRouter.get('/staff/kanban/:area',needStaff('admin','reception','kitche
   const area=z.enum(['cafe','hotel']).parse(req.params.area);
   if (!canViewArea(req.identity!.role,area)) throw new HttpError(403,'Área restringida');
   const rows=await pool.query(`SELECT s.id,s.order_id AS "orderId",s.area,s.status,s.payment_status AS "paymentStatus",
-    s.total_cop AS "totalCop",s.created_at AS "createdAt",o.table_code AS "tableCode",
+    s.total_cop AS "totalCop",s.discount_cop AS "discountCop",s.total_cop-s.discount_cop AS "payableCop",s.created_at AS "createdAt",o.table_code AS "tableCode",
     CASE WHEN s.area='hotel' THEN r.room_number ELSE NULL END AS "roomNumber",
     COALESCE(jsonb_agg(jsonb_build_object('name',i.product_name,'quantity',i.quantity,
       'options',i.options_snapshot,'note',i.note)) FILTER (WHERE i.id IS NOT NULL),'[]'::jsonb) items
@@ -56,8 +56,8 @@ operationsRouter.patch('/staff/suborders/:id/status',needStaff('admin','receptio
 operationsRouter.get('/admin/customers',needStaff('admin'),async(_req,res)=>{
   const result=await pool.query(`SELECT c.id,c.name,c.phone_e164 AS phone,
     c.whatsapp_opt_in AS "whatsappOptIn",c.payment_bypass AS "paymentBypass",COUNT(s.id)::int AS visits,
-    COALESCE(ROUND(AVG(s.total_cop)),0)::bigint AS "averageTicketCop",
-    COALESCE(SUM(s.total_cop),0)::bigint AS "spendCop"
+    COALESCE(ROUND(AVG(s.total_cop-s.discount_cop)),0)::bigint AS "averageTicketCop",
+    COALESCE(SUM(s.total_cop-s.discount_cop),0)::bigint AS "spendCop"
     FROM customers c LEFT JOIN orders o ON o.customer_id=c.id
     LEFT JOIN suborders s ON s.order_id=o.id AND s.area='cafe' AND s.status='completed'
     GROUP BY c.id ORDER BY visits DESC,c.name`);

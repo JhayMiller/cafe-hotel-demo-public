@@ -12,6 +12,7 @@
     "seed:admin": "tsx scripts/create-admin.ts"
   },
   "dependencies": {
+    "@cafe-hotel/game-core": "file:../game-core",
     "@aws-sdk/client-s3": "^3.800.0",
     "@aws-sdk/s3-request-presigner": "^3.800.0",
     "argon2": "^0.44.0",
